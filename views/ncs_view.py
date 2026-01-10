@@ -107,8 +107,18 @@ class NcsView(ft.Column):
         # --- (FIM DA ATUALIZAÇÃO v1.6) ---
 
         # --- Modais (Sem alteração) ---
-        self.modal_txt_numero_nc = ft.TextField(label="Número da NC (6 dígitos)", prefix_text="2026NC", input_filter=ft.InputFilter(r"[0-9]"), max_length=6, keyboard_type=ft.KeyboardType.NUMBER)
-        self.modal_dd_secao = ft.Dropdown(label="Seção (Opcional)", options=[ft.dropdown.Option(text="Carregando...", disabled=True)],)
+        self.modal_txt_numero_nc = ft.TextField(
+            label="Número da NC",
+            value="2026NC",
+            max_length=12,
+            capitalization=ft.TextCapitalization.CHARACTERS,
+            helper_text="Exemplo: 2026NC000001"
+        )
+        # self.modal_dd_secao = ft.Dropdown(label="Seção (Opcional)", options=[ft.dropdown.Option(text="Carregando...", disabled=True)],)
+        self.distribuicoes_list = ft.Column(spacing=10)
+        
+        # Este é o botão que o utilizador clica para criar uma nova linha de seção
+        self.btn_add_distribuicao = ft.TextButton("Adicionar Distribuição por Seção", icon="ADD_CIRCLE_OUTLINE", on_click=self.add_distribuicao_row)
         self.modal_txt_data_recebimento = ft.TextField(label="Data Recebimento", hint_text="AAAA-MM-DD", read_only=True, expand=True)
         self.btn_abrir_data_recebimento = ft.IconButton(icon="CALENDAR_MONTH", tooltip="Selecionar Data Recebimento", on_click=lambda e: self.open_datepicker(self.date_picker_recebimento))
         self.modal_txt_data_validade = ft.TextField(label="Prazo Empenho", hint_text="AAAA-MM-DD", read_only=True, expand=True)
@@ -116,11 +126,41 @@ class NcsView(ft.Column):
         self.date_picker_recebimento = ft.DatePicker(on_change=self.handle_date_recebimento_change, first_date=datetime(2020, 1, 1), last_date=datetime(2030, 12, 31))
         self.date_picker_validade = ft.DatePicker(on_change=self.handle_date_validade_change, first_date=datetime(2020, 1, 1), last_date=datetime(2030, 12, 31))
         self.modal_txt_valor_inicial = ft.TextField(label="Valor Inicial", prefix="R$", on_change=self.format_currency_input, keyboard_type=ft.KeyboardType.NUMBER)
-        self.modal_txt_ptres = ft.TextField(label="PTRES", width=150)
-        self.modal_txt_nd = ft.TextField(label="Natureza Despesa (ND)", width=150)
-        self.modal_txt_fonte = ft.TextField(label="Fonte", width=150)
-        self.modal_txt_pi = ft.TextField(label="PI", width=150)
-        self.modal_txt_ug_gestora = ft.TextField(label="UG Gestora", width=150)
+        self.modal_txt_ptres = ft.TextField(
+            label="PTRES",
+            max_length=6,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            expand=True
+        )
+        self.modal_txt_nd = ft.TextField(
+            label="ND (Natureza de Despesa)",
+            max_length=6,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            expand=True
+        )
+        self.modal_txt_fonte = ft.TextField(
+            label="Fonte",
+            max_length=10,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            expand=True
+        )
+        self.modal_txt_pi = ft.TextField(
+            label="Plano Interno (PI)",
+            max_length=11,
+            capitalization=ft.TextCapitalization.CHARACTERS,
+            helper_text="Exemplo: OCS80006000",
+            expand=True
+        )
+        self.modal_txt_ug_gestora = ft.TextField(
+            label="UG Gestora",
+            max_length=6,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            expand=True
+        )
         self.modal_txt_observacao = ft.TextField(label="Observação (Opcional)", multiline=True, min_lines=3, max_lines=5)
         self.history_modal_title = ft.Text("Extrato da NC")
         self.history_nes_list = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, height=150)
@@ -135,13 +175,13 @@ class NcsView(ft.Column):
         self.modal_rec_loading_ring = ft.ProgressRing(visible=False, width=24, height=24)
         self.modal_rec_btn_cancelar = ft.TextButton("Cancelar", on_click=self.close_recolhimento_modal)
         self.modal_rec_btn_salvar = ft.ElevatedButton("Confirmar Recolhimento", on_click=self.save_recolhimento, icon="KEYBOARD_RETURN")
-        self.modal_form = ft.AlertDialog(modal=True, title=ft.Text("Adicionar Nova Nota de Crédito"), content=ft.Column([self.modal_txt_numero_nc, self.modal_dd_secao, ft.Row([self.modal_txt_data_recebimento, self.btn_abrir_data_recebimento,], spacing=10), ft.Row([self.modal_txt_data_validade, self.btn_abrir_data_validade,], spacing=10), self.modal_txt_valor_inicial, ft.Row([self.modal_txt_ptres, self.modal_txt_nd, self.modal_txt_fonte]), ft.Row([self.modal_txt_pi, self.modal_txt_ug_gestora]), self.modal_txt_observacao,], height=600, width=500, scroll=ft.ScrollMode.ADAPTIVE,), actions=[self.modal_form_loading_ring, self.modal_form_btn_cancelar, self.modal_form_btn_salvar,], actions_alignment=ft.MainAxisAlignment.END,)
+        self.modal_form = ft.AlertDialog(modal=True, title=ft.Text("Adicionar Nova Nota de Crédito"), content=ft.Column([self.modal_txt_numero_nc, self.distribuicoes_list, self.btn_add_distribuicao, ft.Row([self.modal_txt_data_recebimento, self.btn_abrir_data_recebimento,], spacing=10), ft.Row([self.modal_txt_data_validade, self.btn_abrir_data_validade,], spacing=10), self.modal_txt_valor_inicial, ft.Row([self.modal_txt_ptres, self.modal_txt_nd, self.modal_txt_fonte]), ft.Row([self.modal_txt_pi, self.modal_txt_ug_gestora]), self.modal_txt_observacao,], height=600, width=500, scroll=ft.ScrollMode.ADAPTIVE,), actions=[self.modal_form_loading_ring, self.modal_form_btn_cancelar, self.modal_form_btn_salvar,], actions_alignment=ft.MainAxisAlignment.END,)
         self.history_modal = ft.AlertDialog(modal=True, title=self.history_modal_title, content=ft.Column([ft.Text("Notas de Empenho (NEs) Vinculadas:", weight=ft.FontWeight.BOLD), ft.Container(content=self.history_nes_list, border=ft.border.all(1, "grey300"), border_radius=5, padding=10), ft.Divider(height=10), ft.Text("Recolhimentos de Saldo Vinculados:", weight=ft.FontWeight.BOLD), ft.Container(content=self.history_recolhimentos_list, border=ft.border.all(1, "grey300"), border_radius=5, padding=10),], height=400, width=600,), actions=[ft.TextButton("Fechar", on_click=self.close_history_modal)], actions_alignment=ft.MainAxisAlignment.END,)
         self.recolhimento_modal = ft.AlertDialog(modal=True, title=self.recolhimento_modal_title, content=ft.Column([self.modal_rec_data, self.modal_rec_valor, self.modal_rec_descricao,], height=250, width=400,), actions=[self.modal_rec_loading_ring, self.modal_rec_btn_cancelar, self.modal_rec_btn_salvar,], actions_alignment=ft.MainAxisAlignment.END,)
         self.confirm_delete_nc_dialog = ft.AlertDialog(modal=True, title=ft.Text("Confirmar Exclusão de Nota de Crédito"), content=ft.Text("Atenção!\nTem a certeza de que deseja excluir esta Nota de Crédito?\nTodas as Notas de Empenho e Recolhimentos vinculados também serão excluídos.\nEsta ação não pode ser desfeita."), actions=[ft.TextButton("Cancelar", on_click=lambda e: self.close_confirm_delete_nc(None)), ft.ElevatedButton("Excluir NC", color="white", bgcolor="red", on_click=self.confirm_delete_nc),], actions_alignment=ft.MainAxisAlignment.END,)
 
         # --- Filtros (Sem alteração) ---
-        self.filtro_pesquisa_nc = ft.TextField(label="Pesquisar por Nº NC", hint_text="Digite parte do número...", expand=True, on_submit=self.load_ncs_data_wrapper)
+        self.filtro_pesquisa_nc = ft.TextField(label="Pesquisar por Nº NC", hint_text="Digite parte do número...", expand=True, on_change=self.filtrar_ncs_em_tempo_real, prefix_icon=ft.Icons.SEARCH)
         self.filtro_pi = ft.Dropdown(label="Filtrar por PI", options=[ft.dropdown.Option(text="Carregando...", disabled=True)], expand=True, on_change=self.on_pi_filter_change)
         self.filtro_nd = ft.Dropdown(label="Filtrar por ND", options=[ft.dropdown.Option(text="Carregando...", disabled=True)], expand=True, on_change=self.load_ncs_data_wrapper)
         self.filtro_status = ft.Dropdown(label="Filtrar por Status", options=[ft.dropdown.Option(text="Ativa", key="Ativa"), ft.dropdown.Option(text="Sem Saldo", key="Sem Saldo"), ft.dropdown.Option(text="Vencida", key="Vencida"), ft.dropdown.Option(text="Cancelada", key="Cancelada"),], width=200, on_change=self.load_ncs_data_wrapper)
@@ -240,6 +280,11 @@ class NcsView(ft.Column):
         self.page.overlay.append(self.date_picker_validade)   
         
         self.on_mount = self.on_view_mount
+
+    def filtrar_ncs_em_tempo_real(self, e):
+        # Chama o seu método de carregamento já existente
+        # Ele deve usar o valor de self.txt_busca.value para filtrar
+        self.load_ncs_data()
         
     def on_view_mount(self, e):
         print("NcsView: Controlo montado. A carregar dados...")
@@ -411,18 +456,15 @@ class NcsView(ft.Column):
             
     def load_secoes_para_dropdown(self):
         try:
-            self.modal_dd_secao.options.clear()
-            self.modal_dd_secao.options.append(ft.dropdown.Option(text="Nenhuma", key=None))
             
             if not self.secoes_cache:
                 print("NcsView: Cache de seções vazio, a recarregar...")
                 self.load_secoes_cache() 
 
             for secao_id, secao_nome in self.secoes_cache.items():
-                self.modal_dd_secao.options.append(
+            
                     ft.dropdown.Option(text=secao_nome, key=secao_id)
-                )
-            self.modal_dd_secao.update()
+        
             
         except Exception as ex:
             print(f"Erro ao carregar seções no dropdown: {ex}")
@@ -526,11 +568,8 @@ class NcsView(ft.Column):
         
         try:
             # (v1.6) Busca todos os dados para o modal de Quick View
-            query = supabase.table('ncs_com_saldos').select(
-                'id, numero_nc, pi, natureza_despesa, status_calculado, '
-                'valor_inicial, saldo_disponivel, total_empenhado, id_secao, ' 
-                'data_validade_empenho, data_recebimento, ptres, fonte, '
-                'ug_gestora, observacao'
+            query = supabase.table('notas_de_credito').select(
+                '*, distribuicao_nc_secoes(*)'
             )
             
             if self.filtro_pesquisa_nc.value: 
@@ -627,7 +666,7 @@ class NcsView(ft.Column):
         
         self.load_secoes_para_dropdown()
         
-        self.modal_txt_numero_nc.value = "" 
+        self.modal_txt_numero_nc.value = "2026NC" 
         self.modal_txt_data_recebimento.value = ""
         self.modal_txt_data_validade.value = ""
         self.modal_txt_valor_inicial.value = ""
@@ -637,49 +676,59 @@ class NcsView(ft.Column):
         self.modal_txt_pi.value = ""
         self.modal_txt_ug_gestora.value = ""
         self.modal_txt_observacao.value = ""
-        self.modal_dd_secao.value = None 
+        #self.modal_dd_secao.value = None 
         
         for campo in [self.modal_txt_numero_nc, self.modal_txt_data_recebimento, self.modal_txt_data_validade,
                       self.modal_txt_valor_inicial, self.modal_txt_ptres, self.modal_txt_nd,
                       self.modal_txt_fonte, self.modal_txt_pi, self.modal_txt_ug_gestora,
-                      self.modal_txt_observacao, self.modal_dd_secao]: 
+                      self.modal_txt_observacao]: 
             campo.error_text = None
             
+        self.distribuicoes_list.controls.clear()  
+
         self.modal_form.open = True
         self.page.update()
         self.modal_txt_numero_nc.focus() 
 
-    def open_edit_modal(self, nc_completa):
-        print(f"A abrir modal de EDIÇÃO para: {nc_completa['numero_nc']}")
-        self.id_sendo_editado = nc_completa['id'] 
-        self.modal_form.title = ft.Text(f"Editar NC: {nc_completa['numero_nc']}")
-        self.modal_form_btn_salvar.text = "Atualizar"
-        self.modal_form_btn_salvar.icon = "UPDATE"
+    def open_edit_modal(self, nc):
+        print(f"A abrir modal de EDIÇÃO para: {nc['numero_nc']}")
+        self.nc_em_edicao = nc # Guarda a NC que está sendo editada
         
-        self.load_secoes_para_dropdown()
+        # 1. Carregamento dos campos de texto (Agora incluindo Datas e Valor)
+        self.modal_txt_numero_nc.value = nc['numero_nc']
+        self.modal_txt_fonte.value = str(nc.get('fonte', ''))
+        self.modal_txt_ptres.value = str(nc.get('ptres', ''))
+        self.modal_txt_pi.value = nc.get('pi', '')
+        self.modal_txt_nd.value = str(nc.get('natureza_despesa', ''))
+        self.modal_txt_ug_gestora.value = str(nc.get('ug_gestora', ''))
+        self.modal_txt_observacao.value = nc.get('observacao', '')
+        
+        # NOVAS LINHAS: Carrega datas e valor inicial formatado
+        self.modal_txt_data_recebimento.value = nc.get('data_recebimento', '')
+        self.modal_txt_data_validade.value = nc.get('data_validade_empenho', '')
+        self.modal_txt_valor_inicial.value = self.formatar_valor_para_campo(nc.get('valor_inicial', 0))
 
-        numero_nc_sem_prefixo = nc_completa.get('numero_nc', '').upper().replace("2026NC", "")
-        self.modal_txt_numero_nc.value = numero_nc_sem_prefixo
-        
-        self.modal_txt_data_recebimento.value = nc_completa.get('data_recebimento', '')
-        self.modal_txt_data_validade.value = nc_completa.get('data_validade_empenho', '')
-        self.modal_txt_valor_inicial.value = self.formatar_valor_para_campo(nc_completa.get('valor_inicial'))
-        self.modal_txt_ptres.value = nc_completa.get('ptres', '')
-        self.modal_txt_nd.value = nc_completa.get('natureza_despesa', '')
-        self.modal_txt_fonte.value = nc_completa.get('fonte', '')
-        self.modal_txt_pi.value = nc_completa.get('pi', '')
-        self.modal_txt_ug_gestora.value = nc_completa.get('ug_gestora', '')
-        self.modal_txt_observacao.value = nc_completa.get('observacao', '')
-        self.modal_dd_secao.value = nc_completa.get('id_secao') 
-        
-        for campo in [self.modal_txt_numero_nc, self.modal_txt_data_recebimento, self.modal_txt_data_validade,
-                      self.modal_txt_valor_inicial, self.modal_txt_ptres, self.modal_txt_nd,
-                      self.modal_txt_fonte, self.modal_txt_pi, self.modal_txt_ug_gestora,
-                      self.modal_txt_observacao, self.modal_dd_secao]: 
-            campo.error_text = None
-            
+        # 2. Gerenciamento das Seções (Distribuições)
+        self.distribuicoes_list.controls.clear()
+    
+        # O segredo está aqui: o nome deve ser igual ao que o Supabase envia
+        secoes_reais = nc.get('distribuicao_nc_secoes', [])
+    
+        if secoes_reais:
+            for dist in secoes_reais:
+                self.add_distribuicao_row(
+                    e=None, 
+                    secao_id=dist.get('id_secao'), 
+                    valor=dist.get('valor_alocado')
+                )
+        else:
+            # Se for uma NC antiga sem seções salvas, abre uma linha em branco
+            self.add_distribuicao_row(None)
+
+        # 3. Finalização e Abertura
+        self.modal_form.title = ft.Text("Editar Nota de Crédito")
         self.modal_form.open = True
-        self.page.update() 
+        self.page.update()
 
     def close_modal(self, e):
         self.modal_form.open = False
@@ -689,12 +738,14 @@ class NcsView(ft.Column):
     def save_nc(self, e):
         try:
             print("A validar dados da NC...")
+            # 1. Lista de campos de texto obrigatórios (Removi o modal_dd_secao daqui)
             campos_obrigatorios = [
                 self.modal_txt_numero_nc, self.modal_txt_data_recebimento,
                 self.modal_txt_data_validade, self.modal_txt_valor_inicial,
                 self.modal_txt_ptres, self.modal_txt_nd,
                 self.modal_txt_fonte, self.modal_txt_pi, self.modal_txt_ug_gestora
             ]
+            
             has_error = False
             for campo in campos_obrigatorios:
                 campo.error_text = None 
@@ -702,76 +753,94 @@ class NcsView(ft.Column):
                     campo.error_text = "Obrigatório"
                     has_error = True
             
-            if not self.modal_txt_numero_nc.value or len(self.modal_txt_numero_nc.value) != 6:
-                self.modal_txt_numero_nc.error_text = "Deve ter 6 dígitos"
+            if not self.modal_txt_numero_nc.value or len(self.modal_txt_numero_nc.value) != 12:
+                self.modal_txt_numero_nc.error_text = "Deve ter 12 caracteres (ex: 2026NC000001)"
+                has_error = True
+
+            # 2. Validação da Distribuição por Seção
+            if not self.distribuicoes_list.controls:
+                self.show_error("Adicione pelo menos uma seção para distribuir o valor da NC.")
+                return
+
+            try:
+                valor_total_nc = float(self.modal_txt_valor_inicial.value.replace(".", "").replace(",", "."))
+            except:
+                self.modal_txt_valor_inicial.error_text = "Valor inválido"
                 has_error = True
 
             if has_error:
-                print("Erro de validação.")
-                self.modal_form.update()
-                return
-            try:
-                valor_limpo_str = self.modal_txt_valor_inicial.value.replace(".", "").replace(",", ".")
-                valor_float = float(valor_limpo_str)
-            except (ValueError, TypeError, AttributeError):
-                self.modal_txt_valor_inicial.error_text = "Formato de valor inválido."
                 self.modal_form.update()
                 return
 
-            valor_limpo = self.modal_txt_valor_inicial.value.replace(".", "").replace(",", ".")
-            numero_formatado = f"2026NC{self.modal_txt_numero_nc.value.strip().upper()}"
+            # 3. Cálculo e Validação da Soma das Seções
+            total_distribuido = 0.0
+            dados_distribuicao = []
             
-            dados_para_salvar = {
+            for row in self.distribuicoes_list.controls:
+                # Cada row é um ft.Row([dd_secao, txt_valor, btn_remove])
+                dd_sec = row.controls[0]
+                txt_val = row.controls[1]
+                
+                if not dd_sec.value or not txt_val.value:
+                    self.show_error("Preencha a seção e o valor em todas as linhas de distribuição.")
+                    return
+                
+                valor_fatia = float(txt_val.value.replace(".", "").replace(",", "."))
+                total_distribuido += valor_fatia
+                dados_distribuicao.append({"id_secao": dd_sec.value, "valor": valor_fatia})
+
+            # Verifica se a soma bate com o total da NC (Ousadia: Precisão total)
+            if abs(total_distribuido - valor_total_nc) > 0.01:
+                self.show_error(f"Erro: A soma das seções (R$ {total_distribuido:,.2f}) não é igual ao total da NC (R$ {valor_total_nc:,.2f}).")
+                return
+
+            # --- INÍCIO DO SALVAMENTO ---
+            self.modal_form_loading_ring.visible = True
+            self.modal_form.update()
+
+            numero_formatado = self.modal_txt_numero_nc.value.strip().upper()
+            
+            dados_nc = {
                 "numero_nc": numero_formatado, 
-                "data_recebimento": self.modal_txt_data_recebimento.value.strip(),
-                "data_validade_empenho": self.modal_txt_data_validade.value.strip(),
-                "valor_inicial": float(valor_limpo),
-                "ptres": self.modal_txt_ptres.value.strip(),
-                "natureza_despesa": self.modal_txt_nd.value.strip(),
-                "fonte": self.modal_txt_fonte.value.strip(),
-                "pi": self.modal_txt_pi.value.strip(),
-                "ug_gestora": self.modal_txt_ug_gestora.value.strip(),
-                "observacao": self.modal_txt_observacao.value.strip(),
-                "id_secao": self.modal_dd_secao.value, 
+                "data_recebimento": self.modal_txt_data_recebimento.value,
+                "data_validade_empenho": self.modal_txt_data_validade.value,
+                "valor_inicial": valor_total_nc,
+                "ptres": self.modal_txt_ptres.value,
+                "natureza_despesa": self.modal_txt_nd.value,
+                "fonte": self.modal_txt_fonte.value,
+                "pi": self.modal_txt_pi.value,
+                "ug_gestora": self.modal_txt_ug_gestora.value,
+                "observacao": self.modal_txt_observacao.value
             }
-        except Exception as ex_validation:
-            print(f"Erro na validação de dados: {ex_validation}")
-            self.show_error(f"Erro nos dados: {ex_validation}")
-            return
 
-        self.modal_form_loading_ring.visible = True
-        self.modal_form_btn_cancelar.disabled = True
-        self.modal_form_btn_salvar.disabled = True
-        self.modal_form.update()
-
-        try:
             if self.id_sendo_editado is None:
-                print(f"A inserir nova NC no Supabase como: {numero_formatado}...")
-                supabase.table('notas_de_credito').insert(dados_para_salvar).execute()
-                msg_sucesso = f"NC {numero_formatado} salva com sucesso!"
+                res = supabase.table('notas_de_credito').insert(dados_nc).execute()
+                nc_id = res.data[0]['id']
             else:
-                print(f"A atualizar NC ID: {self.id_sendo_editado} como: {numero_formatado}...")
-                supabase.table('notas_de_credito').update(dados_para_salvar).eq('id', self.id_sendo_editado).execute()
-                msg_sucesso = f"NC {numero_formatado} atualizada com sucesso!"
-            
-            print("NC salva com sucesso.")
-            self.show_success_snackbar(msg_sucesso)
-            
+                supabase.table('notas_de_credito').update(dados_nc).eq('id', self.id_sendo_editado).execute()
+                nc_id = self.id_sendo_editado
+                supabase.table('distribuicao_nc_secoes').delete().eq('id_nc', nc_id).execute()
+
+            for item in dados_distribuicao:
+                supabase.table('distribuicao_nc_secoes').insert({
+                    "id_nc": nc_id,
+                    "id_secao": item["id_secao"],
+                    "valor_alocado": item["valor"]
+                }).execute()
+
+            # SUCESSO: Só aqui o modal fecha
+            self.show_success_snackbar("Salvo com sucesso!")
             self.close_modal(None)
-            self.load_secoes_cache() 
-            self.load_filter_options() 
-            self.load_ncs_data() 
-            if self.on_data_changed_callback:
-                self.on_data_changed_callback(None) 
+            self.load_ncs_data()
 
         except Exception as ex:
-            print(f"Erro ao salvar NC: {ex}")
-            self.handle_db_error(ex, f"salvar NC {numero_formatado}")
-            
+            # CORREÇÃO 3: Forçar o modal a ficar aberto em caso de erro no banco
+            print(f"Erro ao salvar: {ex}")
+            self.modal_form.open = True  # Mantém aberto
+            self.modal_form.update()
+            self.handle_db_error(ex, "salvar NC")
         finally:
             self.modal_form_loading_ring.visible = False
-            self.modal_form_btn_cancelar.disabled = False
-            self.modal_form_btn_salvar.disabled = False
             self.modal_form.update()
                  
     def open_history_modal(self, nc):
@@ -1148,6 +1217,45 @@ class NcsView(ft.Column):
             self.modal_txt_ug_gestora.value = dados_nc['ug_gestora']
         if dados_nc.get('observacao'):
             self.modal_txt_observacao.value = dados_nc['observacao']
+
+    def add_distribuicao_row(self, e=None, secao_id=None, valor=None):
+        """Cria uma linha com: [Dropdown Seção] [Campo Valor] [Botão Lixo]"""
+        
+        # 1. Cria o seletor de seção usando as seções que já temos no cache
+        dd_secao = ft.Dropdown(
+            label="Seção",
+            options=[ft.dropdown.Option(text=nome, key=sid) for sid, nome in self.secoes_cache.items()],
+            value=secao_id,
+            expand=2
+        )
+        
+        # 2. Cria o campo de valor para essa fatia da NC
+        txt_valor = ft.TextField(
+            label="Valor para esta Seção",
+            prefix="R$",
+            value=self.formatar_valor_para_campo(valor) if valor else "",
+            on_change=self.format_currency_input,
+            expand=1
+        )
+
+        # 3. Cria o botão para remover apenas esta linha
+        btn_remove = ft.IconButton(
+            icon="DELETE_OUTLINE",
+            icon_color="red",
+            on_click=lambda _: self.remove_distribuicao_row(row_container)
+        )
+
+        # Junta tudo numa linha (Row)
+        row_container = ft.Row([dd_secao, txt_valor, btn_remove], alignment="start")
+        
+        # Adiciona à nossa lista vertical
+        self.distribuicoes_list.controls.append(row_container)
+        self.distribuicoes_list.update()
+
+    def remove_distribuicao_row(self, row_control):
+        """Remove a linha específica quando clicar no lixo"""
+        self.distribuicoes_list.controls.remove(row_control)
+        self.distribuicoes_list.update()        
             
         self.modal_txt_numero_nc.focus()
         self.page.update()
