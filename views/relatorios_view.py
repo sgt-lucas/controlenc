@@ -1,23 +1,19 @@
-# views/relatorios_view.py
-# (Versão Refatorada v1.3 - Layout Moderno)
-# (Adiciona scroll vertical à aba)
-
 import flet as ft
-from supabase_client import supabase # Cliente 'anon'
 from datetime import datetime, date
 import pandas as pd
 import traceback 
-import io       
-import os       
-import uuid     
+import io        
+import os        
+import uuid      
+import database # TÉCNICO: Motor PostgreSQL 17 local
 
-# Importações do ReportLab
+# Importações do ReportLab permanecem as mesmas para manter o layout dos PDFs
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT 
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
 class RelatoriosView(ft.Column):
     """
@@ -168,12 +164,13 @@ class RelatoriosView(ft.Column):
             print(f"ERRO CRÍTICO (Modal não encontrado): {message}")
             
     def handle_db_error(self, ex, context=""):
-        msg = str(ex)
-        print(f"Erro de DB Bruto ({context}): {msg}") 
-        if "fetch failed" in msg or "Connection refused" in msg or "Server disconnected" in msg:
-            self.show_error("Erro de Rede: Não foi possível conectar ao banco de dados. Tente atualizar a aba.")
+        """Trata erros do motor PostgreSQL 17 local."""
+        msg = str(ex).lower()
+        print(f"Erro de Banco Local ({context}): {msg}") 
+        if "connection" in msg or "refused" in msg:
+            self.show_error("Erro de Conexão: O servidor PostgreSQL 17 local não responde.")
         else:
-            self.show_error(f"Erro inesperado ao {context}: {msg}")
+            self.show_error(f"Erro inesperado ao {context}: {ex}")
 
     def show_success_snackbar(self, message):
         self.page.snack_bar = ft.SnackBar(ft.Text(message), bgcolor="green")
@@ -224,38 +221,34 @@ class RelatoriosView(ft.Column):
         self.load_nc_list_for_statement_filter()
     
     def load_filter_options(self, pi_selecionado=None):
+        """Busca PIs e NDs únicos no banco local para os filtros de relatório."""
         try:
             if pi_selecionado is None:
-                print("Relatórios: A carregar opções de filtro (PIs e NDs)...")
-                pis = supabase.rpc('get_distinct_pis').execute()
-                self.filtro_pi.options.clear(); self.filtro_pi.options.append(ft.dropdown.Option(text="Todos os PIs", key=None))
-                if pis.data:
-                    for pi in sorted(pis.data):
-                        if pi: self.filtro_pi.options.append(ft.dropdown.Option(text=pi, key=pi))
-                nds = supabase.rpc('get_distinct_nds').execute()
-                self.filtro_nd.options.clear(); self.filtro_nd.options.append(ft.dropdown.Option(text="Todas as NDs", key=None))
-                if nds.data:
-                    for nd in sorted(nds.data):
-                        if nd: self.filtro_nd.options.append(ft.dropdown.Option(text=nd, key=nd))
-                print("Relatórios: Opções de filtro carregadas.")
-            else:
-                print(f"Relatórios: A carregar NDs para o PI: {pi_selecionado}...")
-                self.filtro_nd.disabled = True; self.filtro_nd.update() 
-                nds = supabase.rpc('get_distinct_nds_for_pi', {'p_pi': pi_selecionado}).execute()
-                self.filtro_nd.options.clear(); self.filtro_nd.options.append(ft.dropdown.Option(text="Todas as NDs", key=None))
-                if nds.data:
-                    for nd in sorted(nds.data):
-                         if nd: self.filtro_nd.options.append(ft.dropdown.Option(text=nd, key=nd))
-                print("Relatórios: Filtro ND atualizado.")
+                print("Relatórios: A carregar PIs e NDs do banco local...")
+                # TÉCNICO: SELECT DISTINCT nativo do Postgres
+                pis = database.execute_query("SELECT DISTINCT pi FROM ncs_com_saldos ORDER BY pi")
+                self.filtro_pi.options = [ft.dropdown.Option(text="Todos os PIs", key=None)]
+                if pis:
+                    for row in pis:
+                        if row['pi']: self.filtro_pi.options.append(ft.dropdown.Option(text=row['pi'], key=row['pi']))
                 
-            self.filtro_nd.disabled = False
-            if pi_selecionado is None:
-                self.update() 
+                nds = database.execute_query("SELECT DISTINCT natureza_despesa FROM ncs_com_saldos ORDER BY natureza_despesa")
+                self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key=None)]
+                if nds:
+                    for row in nds:
+                        if row['natureza_despesa']: self.filtro_nd.options.append(ft.dropdown.Option(text=row['natureza_despesa'], key=row['natureza_despesa']))
+            else:
+                # Filtro dependente (NDs por PI)
+                sql = "SELECT DISTINCT natureza_despesa FROM ncs_com_saldos WHERE pi = %s ORDER BY natureza_despesa"
+                nds = database.execute_query(sql, (pi_selecionado,))
+                self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key=None)]
+                if nds:
+                    for row in nds:
+                        self.filtro_nd.options.append(ft.dropdown.Option(text=row['natureza_despesa'], key=row['natureza_despesa']))
+            
+            if self.page: self.update()
         except Exception as ex: 
-            print("--- ERRO CRÍTICO (TRACEBACK) NO RELATORIOS [load_filter_options] ---")
             traceback.print_exc()
-            print("---------------------------------------------------------------------")
-            print(f"Erro ao carregar opções de filtro nos Relatórios: {ex}")
             self.handle_db_error(ex, "carregar filtros de PI/ND")
 
     def on_pi_filter_change(self, e):
@@ -273,75 +266,112 @@ class RelatoriosView(ft.Column):
         if self.page: self.page.update() 
         
     def fetch_report_data_geral(self, e): 
-        print("Relatórios: A buscar dados para Relatório Geral...")
+        """Busca dados no PostgreSQL 17 para o Relatório Geral."""
+        print("Relatórios: A buscar dados filtrados localmente...")
         try:
-            query = supabase.table('ncs_com_saldos') \
-                           .select('numero_nc, pi, natureza_despesa, status_calculado, valor_inicial, saldo_disponivel, data_validade_empenho, ug_gestora, data_recebimento, observacao') 
-            if self.filtro_data_inicio.value: query = query.gte('data_recebimento', self.filtro_data_inicio.value)
-            if self.filtro_data_fim.value: query = query.lte('data_recebimento', self.filtro_data_fim.value)
-            if self.filtro_status.value: query = query.eq('status_calculado', self.filtro_status.value)
-            if self.filtro_pi.value: query = query.eq('pi', self.filtro_pi.value)
-            if self.filtro_nd.value: query = query.eq('natureza_despesa', self.filtro_nd.value)
-            resposta = query.order('data_recebimento', desc=True).execute()
+            # TÉCNICO: Uso da view ncs_com_saldos para dados já calculados
+            sql = "SELECT * FROM ncs_com_saldos WHERE 1=1"
+            params = []
+
+            if self.filtro_data_inicio.value:
+                sql += " AND data_recebimento >= %s"; params.append(self.filtro_data_inicio.value)
+            if self.filtro_data_fim.value:
+                sql += " AND data_recebimento <= %s"; params.append(self.filtro_data_fim.value)
+            if self.filtro_status.value:
+                sql += " AND status_calculado = %s"; params.append(self.filtro_status.value)
+            if self.filtro_pi.value:
+                sql += " AND pi = %s"; params.append(self.filtro_pi.value)
+            if self.filtro_nd.value:
+                sql += " AND natureza_despesa = %s"; params.append(self.filtro_nd.value)
+
+            sql += " ORDER BY data_recebimento DESC"
+            dados = database.execute_query(sql, tuple(params))
             
-            if resposta.data: 
-                print(f"Relatórios: {len(resposta.data)} registos encontrados."); 
-                return resposta.data
+            if dados: 
+                print(f"Relatórios: {len(dados)} registros encontrados.") 
+                return dados
             else: 
-                print("Relatórios: Nenhum registo encontrado.");
-                self.page.snack_bar = ft.SnackBar(ft.Text("Nenhum registo encontrado com estes filtros."), bgcolor="orange")
+                self.page.snack_bar = ft.SnackBar(ft.Text("Nenhum registro encontrado com estes filtros."), bgcolor="orange")
                 self.page.snack_bar.open = True
                 self.page.update()
                 return None
         except Exception as ex: 
-            print(f"Erro ao buscar dados (Geral): {ex}"); 
             self.handle_db_error(ex, "buscar dados do Relatório Geral") 
             return None
             
     def fetch_report_data_extrato(self, nc_id):
+        """Busca o histórico completo de uma NC, incluindo SEÇÕES e seus saldos."""
         if not nc_id: return None
-        print(f"Relatórios: A buscar dados para Extrato da NC ID: {nc_id}...")
+        print(f"Relatórios: A gerar extrato completo para NC ID: {nc_id}...")
         try:
-            nc_data = supabase.table('notas_de_credito').select('*, observacao').eq('id', nc_id).maybe_single().execute()
-            if not nc_data.data: 
-                print("NC não encontrada."); 
-                self.show_error("NC selecionada não encontrada."); 
-                return None
+            # 1. Dados da NC
+            nc_res = database.execute_query("SELECT * FROM notas_de_credito WHERE id = %s", (nc_id,))
+            if not nc_res: return None
             
-            nes_data = supabase.table('notas_de_empenho').select('*').eq('id_nc', nc_id).order('data_empenho', desc=True).execute()
-            recolhimentos_data = supabase.table('recolhimentos_de_saldo').select('*').eq('id_nc', nc_id).order('data_recolhimento', desc=True).execute()
+            # 2. Dados das Seções (Cotas) com Saldo Calculado
+            # (Igual ao Quick View)
+            sql_secoes = """
+                SELECT s.nome, d.valor_alocado, 
+                       COALESCE((SELECT SUM(valor_empenhado) FROM notas_de_empenho WHERE id_distribuicao = d.id), 0) as emp,
+                       COALESCE((SELECT SUM(valor_recolhido) FROM recolhimentos_de_saldo WHERE id_distribuicao = d.id), 0) as rec
+                FROM distribuicao_nc_secoes d
+                JOIN secoes s ON s.id = d.id_secao
+                WHERE d.id_nc = %s
+                ORDER BY s.nome
+            """
+            secoes_res = database.execute_query(sql_secoes, (nc_id,))
             
-            print("Dados do Extrato carregados.")
-            return { "nc": nc_data.data, "nes": nes_data.data if nes_data.data else [], "recolhimentos": recolhimentos_data.data if recolhimentos_data.data else [] }
+            # 3. Notas de Empenho (Com nome da seção)
+            sql_nes = """
+                SELECT ne.*, s.nome as nome_secao 
+                FROM notas_de_empenho ne
+                JOIN distribuicao_nc_secoes d ON ne.id_distribuicao = d.id
+                JOIN secoes s ON s.id = d.id_secao
+                WHERE d.id_nc = %s 
+                ORDER BY ne.data_empenho DESC
+            """
+            nes_res = database.execute_query(sql_nes, (nc_id,))
+            
+            # 4. Recolhimentos (Com nome da seção)
+            sql_rec = """
+                SELECT r.*, s.nome as nome_secao
+                FROM recolhimentos_de_saldo r
+                JOIN distribuicao_nc_secoes d ON r.id_distribuicao = d.id
+                JOIN secoes s ON s.id = d.id_secao
+                WHERE r.id_nc = %s 
+                ORDER BY r.data_recolhimento DESC
+            """
+            rec_res = database.execute_query(sql_rec, (nc_id,))
+            
+            return { 
+                "nc": nc_res[0], 
+                "secoes": secoes_res if secoes_res else [], # Novo Campo
+                "nes": nes_res if nes_res else [], 
+                "recolhimentos": rec_res if rec_res else [] 
+            }
         except Exception as ex: 
-            print(f"Erro ao buscar dados (Extrato): {ex}"); 
             self.handle_db_error(ex, "buscar dados do Extrato")
             return None
         
     def load_nc_list_for_statement_filter(self):
-        print("Relatórios: A carregar NCs para o filtro de Extrato...")
+        """Preenche o seletor de extrato com NCs do banco local."""
+        print("Relatórios: A carregar lista de NCs para extrato...")
         try:
-            resposta_ncs = supabase.table('notas_de_credito') \
-                                   .select('id, numero_nc') \
-                                   .order('numero_nc', desc=False) \
-                                   .execute()
+            sql = "SELECT id, numero_nc FROM notas_de_credito ORDER BY numero_nc ASC"
+            resposta_ncs = database.execute_query(sql)
 
-            self.dropdown_nc_extrato.options.clear()
-            if not resposta_ncs.data:
+            self.dropdown_nc_extrato.options = []
+            if not resposta_ncs:
                  self.dropdown_nc_extrato.options.append(ft.dropdown.Option(text="Nenhuma NC encontrada", disabled=True))
             else:
-                for nc in resposta_ncs.data:
+                for nc in resposta_ncs:
                     self.dropdown_nc_extrato.options.append(
-                        ft.dropdown.Option(key=nc['id'], text=nc['numero_nc'])
+                        ft.dropdown.Option(key=str(nc['id']), text=nc['numero_nc'])
                     )
 
-            print("Relatórios: Lista de NCs para Extrato carregada.")
-            self.update() 
+            if self.page: self.update() 
         except Exception as ex:
-            print("--- ERRO CRÍTICO (TRACEBACK) NO RELATORIOS [load_nc_list_for_statement_filter] ---")
             traceback.print_exc()
-            print("----------------------------------------------------------------------------------")
-            print(f"Erro ao carregar NCs para filtro de extrato: {ex}")
             self.handle_db_error(ex, "carregar lista de NCs")
             
     
@@ -449,184 +479,361 @@ class RelatoriosView(ft.Column):
         dados = self.dados_relatorio_para_salvar
         
         if not tipo or not dados:
-            raise Exception("Dados ou tipo de relatório em falta para gerar bytes.")
+            raise Exception("Dados ou tipo de relatório em falta.")
 
-        print(f"A gerar bytes para: {tipo}")
+        print(f"A gerar bytes PRO (v5 - Dashboard Layout) para: {tipo}")
+
+        # --- FUNÇÕES AUXILIARES ---
+        def formatar_data_segura(valor):
+            if not valor: return ""
+            try:
+                if hasattr(valor, 'strftime'): return valor.strftime('%d/%m/%Y')
+                elif isinstance(valor, str): return datetime.fromisoformat(valor).strftime('%d/%m/%Y')
+                return str(valor)
+            except: return str(valor)
+
+        # Configuração do Cabeçalho/Rodapé
+        def add_header_footer(canvas, doc):
+            canvas.saveState()
+            w, h = doc.pagesize
+            
+            # --- 1. LOGO (COM DIAGNÓSTICO DE ERRO) ---
+            # Tenta encontrar a logo em múltiplos locais possíveis
+            caminhos_tentados = [
+                os.path.join(os.getcwd(), "assets", "logo.png"),
+                os.path.join(os.getcwd(), "assets", "logo.jpg"),  # Tenta JPG
+                os.path.join(os.getcwd(), "assets", "logo.jpeg"), # Tenta JPEG
+                "assets/logo.png"
+            ]
+            
+            logo_encontrada = False
+            margem_logo = 0
+            
+            for path in caminhos_tentados:
+                if os.path.exists(path):
+                    try:
+                        # Desenha a logo
+                        canvas.drawImage(path, doc.leftMargin, h - 50, width=45, height=45, mask='auto', preserveAspectRatio=True)
+                        margem_logo = 55 
+                        logo_encontrada = True
+                        break
+                    except Exception as e:
+                        print(f"Erro ao desenhar logo de {path}: {e}")
+
+            # SE NÃO ACHOU A LOGO: Desenha um quadrado vermelho de aviso (Debug Visual)
+            if not logo_encontrada:
+                print(f"DEBUG LOGO: Não encontrei 'logo.png'. Caminhos testados: {caminhos_tentados}")
+                canvas.setFillColor(colors.red)
+                canvas.rect(doc.leftMargin, h - 50, 45, 45, fill=1) # Quadrado vermelho
+                margem_logo = 55
+
+            # Título do Sistema
+            canvas.setFont('Helvetica-Bold', 11) 
+            canvas.setFillColor(colors.darkblue)
+            canvas.drawString(doc.leftMargin + margem_logo, h - 30, "SISTEMA DE CONTROLE DE NOTAS DE CRÉDITO")
+            
+            # Data e Hora
+            data_hoje = datetime.now().strftime("%d/%m/%Y %H:%M")
+            canvas.setFont('Helvetica', 9)
+            canvas.drawRightString(w - doc.rightMargin, h - 30, f"Emitido em: {data_hoje}")
+            
+            # Linha divisória
+            canvas.setStrokeColor(colors.darkblue)
+            canvas.setLineWidth(1)
+            canvas.line(doc.leftMargin, h - 55, w - doc.rightMargin, h - 55)
+
+            # --- 2. MARCA D'ÁGUA ---
+            canvas.setFont('Helvetica-Bold', 100)
+            canvas.setFillColor(colors.lightgrey)
+            canvas.setFillAlpha(0.15) 
+            canvas.drawCentredString(w/2, 60, "SALC")
+            canvas.setFillAlpha(1)
+
+            # --- 3. RODAPÉ ---
+            canvas.setFont('Helvetica', 8)
+            canvas.setFillColor(colors.black)
+            canvas.drawCentredString(w/2, 15, f"Página {doc.page}")
+            
+            canvas.restoreState()
 
         try:
-            # --- EXCEL GERAL ---
+            # === EXCEL GERAL (Mantido) ===
             if tipo == "excel_geral":
                 df = pd.DataFrame(dados)
-                df = df.rename(columns={ 'numero_nc': 'Número NC', 'pi': 'PI', 'natureza_despesa': 'ND', 'status_calculado': 'Status', 'valor_inicial': 'Valor Inicial', 'saldo_disponivel': 'Saldo Disponível', 'data_validade_empenho': 'Prazo Empenho', 'ug_gestora': 'UG Gestora', 'data_recebimento': 'Data Recebimento', 'observacao': 'Observação' })
-                colunas_relatorio = ['Número NC', 'PI', 'ND', 'Status', 'Valor Inicial', 'Saldo Disponível', 'Prazo Empenho', 'UG Gestora', 'Data Recebimento', 'Observação']
-                colunas_existentes = [col for col in colunas_relatorio if col in df.columns]
-                df = df[colunas_existentes]
-                if 'Data Recebimento' in df.columns: df['Data Recebimento'] = pd.to_datetime(df['Data Recebimento'], errors='coerce').dt.strftime('%d/%m/%Y')
-                if 'Prazo Empenho' in df.columns: df['Prazo Empenho'] = pd.to_datetime(df['Prazo Empenho'], errors='coerce').dt.strftime('%d/%m/%Y')
-                if 'Valor Inicial' in df.columns: df['Valor Inicial'] = pd.to_numeric(df['Valor Inicial'], errors='coerce').fillna(0)
-                if 'Saldo Disponível' in df.columns: df['Saldo Disponível'] = pd.to_numeric(df['Saldo Disponível'], errors='coerce').fillna(0)
-                
+                df = df.rename(columns={ 
+                    'numero_nc': 'Número NC', 'nome_secao': 'Seção', 'pi': 'PI', 'natureza_despesa': 'ND', 
+                    'status_calculado': 'Status', 'valor_inicial': 'Valor Cota', 'saldo_disponivel': 'Saldo Cota',
+                    'valor_total_nc': 'Valor Total NC', 'saldo_disponivel_nc': 'Saldo Total NC',
+                    'data_validade_empenho': 'Prazo', 'ug_gestora': 'UG', 'data_recebimento': 'Recebimento', 'observacao': 'Obs' 
+                })
+                colunas_visiveis = ['Número NC', 'Seção', 'PI', 'ND', 'Status', 'Valor Total NC', 'Saldo Total NC', 'Valor Cota', 'Saldo Cota', 'Prazo', 'Recebimento', 'Obs']
+                for col in colunas_visiveis:
+                    if col not in df.columns: df[col] = ""
+                df = df[colunas_visiveis]
+                for col_data in ['Recebimento', 'Prazo']:
+                    if col_data in df.columns: df[col_data] = pd.to_datetime(df[col_data], errors='coerce').dt.strftime('%d/%m/%Y')
+                for col in ['Valor Total NC', 'Saldo Total NC', 'Valor Cota', 'Saldo Cota']:
+                    if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
                 with io.BytesIO() as file_in_memory:
                     df.to_excel(file_in_memory, index=False, engine='openpyxl')
                     return file_in_memory.getvalue()
 
-            # --- PDF GERAL ---
+            # === PDF GERAL (NOVO LAYOUT DE DUAS COLUNAS NO TOPO) ===
+            # === PDF GERAL (ATUALIZADO V6 - Filtros de Zeros + Detalhe NC na Direita) ===
             elif tipo == "pdf_geral":
                 with io.BytesIO() as file_in_memory:
-                    doc = SimpleDocTemplate(file_in_memory, pagesize=landscape(letter)); story = [];
+                    doc = SimpleDocTemplate(file_in_memory, pagesize=landscape(letter), topMargin=70, bottomMargin=30, leftMargin=20, rightMargin=20)
+                    story = []
+                    
                     styles = getSampleStyleSheet()
-                    style_normal = styles['Normal']; style_normal.alignment = TA_LEFT; style_normal.fontSize = 8
-                    style_right = ParagraphStyle(name='Right', parent=style_normal, alignment=TA_RIGHT)
-                    style_header = ParagraphStyle(name='Header', parent=style_normal, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.whitesmoke, fontSize=9)
-                    style_center = ParagraphStyle(name='Center', parent=style_normal, alignment=TA_CENTER)
-                    style_title = styles['Heading1']; style_title.alignment = TA_CENTER
+                    style_title = ParagraphStyle(name='Title', parent=styles['Heading1'], alignment=TA_CENTER, fontSize=16, spaceAfter=10, textColor=colors.darkblue)
                     
-                    story.append(Paragraph("Relatório Geral de Notas de Crédito", style_title)); story.append(Spacer(1, 0.2*inch))
-                    filtros_str = "Filtros Aplicados: "; 
-                    if self.filtro_data_inicio.value: filtros_str += f"Data Rec. Início: {self.filtro_data_inicio.value}, "; 
-                    if self.filtro_data_fim.value: filtros_str += f"Data Rec. Fim: {self.filtro_data_fim.value}, "; 
-                    if self.filtro_pi.value: filtros_str += f"PI: {self.filtro_pi.value}, "; 
-                    if self.filtro_nd.value: filtros_str += f"ND: {self.filtro_nd.value}, "; 
-                    if self.filtro_status.value: filtros_str += f"Status: {self.filtro_status.value}"; 
-                    if filtros_str == "Filtros Aplicados: ": filtros_str += "Nenhum"
-                    story.append(Paragraph(filtros_str, styles['Normal'])); story.append(Spacer(1, 0.2*inch))
+                    # Estilos da Tabela
+                    style_center = ParagraphStyle(name='Center', parent=styles['Normal'], alignment=TA_CENTER, fontSize=9, leading=11)
+                    style_left = ParagraphStyle(name='Left', parent=styles['Normal'], alignment=TA_LEFT, fontSize=9, leading=11)
+                    style_right = ParagraphStyle(name='Right', parent=styles['Normal'], alignment=TA_RIGHT, fontSize=9, leading=11)
+                    style_header_tab = ParagraphStyle(name='TabHeader', parent=style_center, fontName='Helvetica-Bold', textColor=colors.white, fontSize=9)
                     
-                    header = [Paragraph(h, style_header) for h in ['Número NC', 'PI', 'ND', 'Status', 'Valor Inicial', 'Saldo', 'Prazo Empenho', 'UG Gestora', 'Data Receb.', 'Observação']]
-                    pdf_data = [header]
+                    # Estilos do Painel de Resumo
+                    style_resumo_item = ParagraphStyle(name='ResumoItem', parent=styles['Normal'], fontSize=9, leading=12)
                     
-                    for item in dados: 
-                        data_rec = datetime.fromisoformat(item.get('data_recebimento', '')).strftime('%d/%m/%Y') if item.get('data_recebimento') else ''
-                        prazo_emp = datetime.fromisoformat(item.get('data_validade_empenho', '')).strftime('%d/%m/%Y') if item.get('data_validade_empenho') else ''
-                        row = [ 
-                            Paragraph(item.get('numero_nc', ''), style_center), 
-                            Paragraph(item.get('pi', ''), style_center), 
-                            Paragraph(item.get('natureza_despesa', ''), style_center), 
-                            Paragraph(item.get('status_calculado', ''), style_center), 
-                            Paragraph(self.formatar_moeda(item.get('valor_inicial')), style_right), 
-                            Paragraph(self.formatar_moeda(item.get('saldo_disponivel')), style_right), 
-                            Paragraph(prazo_emp, style_center), 
-                            Paragraph(item.get('ug_gestora', ''), style_center), 
-                            Paragraph(data_rec, style_center), 
-                            Paragraph(item.get('observacao', ''), style_normal) 
-                        ]
-                        pdf_data.append(row) 
+                    story.append(Paragraph("Relatório Geral de Notas de Crédito", style_title))
+                    
+                    # --- CÁLCULO INTELIGENTE DOS RESUMOS ---
+                    saldo_total_geral = 0
+                    resumo_pi = {} 
+                    # Nova Estrutura Direita: { 'NomeSecao': { 'NumeroNC': valor_saldo } }
+                    resumo_secao_detalhado = {} 
+
+                    for item in dados:
+                        saldo_item = float(item.get('saldo_disponivel', 0) or 0)
+                        saldo_total_geral += saldo_item
                         
-                    col_widths = [1.2*inch, 0.7*inch, 0.7*inch, 0.7*inch, 1.0*inch, 1.0*inch, 0.8*inch, 0.7*inch, 0.8*inch, 2.4*inch]
+                        # Coleta Esquerda (Origem)
+                        pi = str(item.get('pi', 'SEM PI'))
+                        nd = str(item.get('natureza_despesa', 'SEM ND'))
+                        if pi not in resumo_pi: resumo_pi[pi] = {}
+                        if nd not in resumo_pi[pi]: resumo_pi[pi][nd] = 0
+                        resumo_pi[pi][nd] += saldo_item
+                        
+                        # Coleta Direita (Destino com Rastreabilidade)
+                        sec = str(item.get('nome_secao', 'GERAL'))
+                        nc_num = str(item.get('numero_nc', ''))
+                        
+                        if sec not in resumo_secao_detalhado: resumo_secao_detalhado[sec] = {}
+                        if nc_num not in resumo_secao_detalhado[sec]: resumo_secao_detalhado[sec][nc_num] = 0
+                        resumo_secao_detalhado[sec][nc_num] += saldo_item
+
+                    # --- MONTAGEM DO TEXTO (HTML) ---
+                    header_html = "<font color='#00008B' size='10'><b>{}</b></font><br/><br/>"
+
+                    # 1. Coluna Esquerda: ORIGEM (Filtrando Zeros)
+                    texto_esquerda = header_html.format("ORIGEM (Por PI e ND):")
                     
-                    table = Table(pdf_data, repeatRows=1, colWidths=col_widths) 
-                    style = TableStyle([ ('BACKGROUND', (0, 0), (-1, 0), colors.grey), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('GRID', (0, 0), (-1, -1), 1, colors.black), ('BACKGROUND', (0, 1), (-1, -1), colors.beige), ])
-                    table.setStyle(style); story.append(table)
-                    doc.build(story)
+                    for pi_key in sorted(resumo_pi.keys()):
+                        total_pi = sum(resumo_pi[pi_key].values())
+                        
+                        # MELHORIA 1: Só exibe PI se tiver saldo positivo
+                        if total_pi > 0.00:
+                            texto_esquerda += f"<b>PI: {pi_key}</b> (Total: {self.formatar_moeda(total_pi)})<br/>"
+                            
+                            for nd_key in sorted(resumo_pi[pi_key].keys()):
+                                val_nd = resumo_pi[pi_key][nd_key]
+                                # Só exibe ND se tiver saldo
+                                if val_nd > 0.00:
+                                    texto_esquerda += f"&nbsp;&nbsp;&nbsp;• ND {nd_key}: {self.formatar_moeda(val_nd)}<br/>"
+                            
+                            texto_esquerda += "<br/><br/>" # Espaço entre PIs
+
+                    # 2. Coluna Direita: DESTINO (Com NCs Detalhadas)
+                    texto_direita = header_html.format("DESTINO (Por Seção):")
+                    
+                    # Ordena seções por valor total (do maior para o menor)
+                    lista_secoes = []
+                    for sec, ncs_dict in resumo_secao_detalhado.items():
+                        total_sec = sum(ncs_dict.values())
+                        lista_secoes.append((sec, total_sec, ncs_dict))
+                    
+                    lista_secoes.sort(key=lambda x: x[1], reverse=True)
+                    
+                    for sec_nome, sec_total, ncs_dict in lista_secoes:
+                         # Só exibe Seção se tiver saldo
+                         if sec_total > 0.00:
+                             texto_direita += f"<font size='9'><b>{sec_nome}</b></font>: {self.formatar_moeda(sec_total)}<br/>"
+                             
+                             # MELHORIA 2: Lista quais NCs compõem esse saldo
+                             # Ordena NCs por valor
+                             ncs_sorted = sorted(ncs_dict.items(), key=lambda x: x[1], reverse=True)
+                             
+                             for nc_n, nc_v in ncs_sorted:
+                                 if nc_v > 0.00:
+                                     # Indentação com seta pequena e cor cinza escuro para diferenciar
+                                     texto_direita += f"&nbsp;&nbsp;<font color='#333333' size='8'>» {nc_n}: {self.formatar_moeda(nc_v)}</font><br/>"
+                             
+                             texto_direita += "<br/>" 
+
+                    # ---------------------------------------------------
+
+                    style_destaque = ParagraphStyle(name='Destaque', parent=styles['Normal'], alignment=TA_LEFT, fontSize=12, textColor=colors.darkblue, fontName='Helvetica-Bold')
+                    story.append(Paragraph(f"Saldo Total Disponível: {self.formatar_moeda(saldo_total_geral)}", style_destaque))
+                    story.append(Spacer(1, 0.1*inch))
+
+                    # Tabela Resumo Lado a Lado
+                    col_resumo_data = [[
+                        Paragraph(texto_esquerda, style_resumo_item), 
+                        Paragraph(texto_direita, style_resumo_item)
+                    ]]
+                    t_resumo = Table(col_resumo_data, colWidths=[5.5*inch, 5.0*inch])
+                    t_resumo.setStyle(TableStyle([
+                        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                        ('LINEBEFORE', (1,0), (1,-1), 1, colors.lightgrey),
+                        ('LEFTPADDING', (1,0), (1,-1), 20),
+                    ]))
+                    story.append(t_resumo)
+                    story.append(Spacer(1, 0.2*inch))
+                    
+                    # --- TABELA PRINCIPAL (Mantida Igual) ---
+                    ncs_agrupadas = {}
+                    for item in dados:
+                        num = item['numero_nc']
+                        if num not in ncs_agrupadas:
+                            ncs_agrupadas[num] = item.copy()
+                            ncs_agrupadas[num]['lista_secoes'] = []
+                        ncs_agrupadas[num]['lista_secoes'].append({
+                            'nome': item.get('nome_secao', ''),
+                            'val': item.get('valor_inicial', 0),
+                            'sal': item.get('saldo_disponivel', 0)
+                        })
+                    
+                    lista_final = list(ncs_agrupadas.values())
+                    
+                    header = [
+                        Paragraph('NC', style_header_tab),
+                        Paragraph('Detalhamento por Seção', style_header_tab),
+                        Paragraph('PI', style_header_tab),
+                        Paragraph('ND', style_header_tab),
+                        Paragraph('V. Total', style_header_tab),
+                        Paragraph('Saldo Total', style_header_tab),
+                        Paragraph('Prazo', style_header_tab),
+                        Paragraph('Obs', style_header_tab)
+                    ]
+                    table_data = [header]
+                    row_styles = []
+                    
+                    for i, nc in enumerate(lista_final):
+                        txt_sec = ""
+                        for s in nc['lista_secoes']:
+                            txt_sec += f"<b>{s['nome']}</b>: {self.formatar_moeda(s['val'])} (Disp: {self.formatar_moeda(s['sal'])})<br/><br/>"
+                        txt_sec = txt_sec.rstrip("<br/><br/>")
+
+                        status = nc.get('status_calculado', 'Ativa')
+                        bg = colors.white
+                        if status == 'Vencida': bg = colors.Color(1, 0.9, 0.9)
+                        elif status == 'Sem Saldo': bg = colors.Color(0.95, 0.95, 0.95)
+                        elif status == 'Ativa': bg = colors.Color(0.92, 1, 0.92)
+                        
+                        row_styles.append(('BACKGROUND', (0, i+1), (-1, i+1), bg))
+                        
+                        row = [
+                            Paragraph(str(nc.get('numero_nc')), style_center),
+                            Paragraph(txt_sec, style_left),
+                            Paragraph(str(nc.get('pi')), style_center),
+                            Paragraph(str(nc.get('natureza_despesa')), style_center),
+                            Paragraph(self.formatar_moeda(nc.get('valor_total_nc')), style_right),
+                            Paragraph(self.formatar_moeda(nc.get('saldo_disponivel_nc')), style_right),
+                            Paragraph(formatar_data_segura(nc.get('data_validade_empenho')), style_center),
+                            Paragraph(str(nc.get('observacao', '')), style_left)
+                        ]
+                        table_data.append(row)
+                    
+                    col_widths = [1.2*inch, 2.5*inch, 1.1*inch, 0.7*inch, 0.9*inch, 0.9*inch, 0.8*inch, 1.9*inch]
+                    
+                    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+                    t.setStyle(TableStyle([
+                        ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
+                        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                        ('LEFTPADDING', (0,0), (-1,-1), 5),
+                        ('RIGHTPADDING', (0,0), (-1,-1), 5),
+                        ('TOPPADDING', (0,0), (-1,-1), 5),
+                        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+                    ] + row_styles))
+                    
+                    story.append(t)
+                    doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
                     return file_in_memory.getvalue()
 
-            # --- EXCEL EXTRATO ---
+            # === EXCEL E PDF EXTRATO (Mantidos) ===
             elif tipo == "excel_extrato":
+                # (Lógica inalterada)
                 df_nc = pd.DataFrame([dados['nc']])
                 df_nc = df_nc.rename(columns={ 'numero_nc': 'Número NC', 'pi': 'PI', 'natureza_despesa': 'ND', 'valor_inicial': 'Valor Inicial', 'data_validade_empenho': 'Prazo Empenho', 'ug_gestora': 'UG Gestora', 'data_recebimento': 'Data Recebimento', 'ptres':'PTRES', 'fonte':'Fonte', 'observacao': 'Observação' })
-                df_nc = df_nc[['Número NC', 'PI', 'ND', 'Valor Inicial', 'Prazo Empenho', 'Data Recebimento', 'UG Gestora', 'PTRES', 'Fonte', 'Observação']] 
-                if 'Data Recebimento' in df_nc.columns: df_nc['Data Recebimento'] = pd.to_datetime(df_nc['Data Recebimento'], errors='coerce').dt.strftime('%d/%m/%Y')
-                if 'Prazo Empenho' in df_nc.columns: df_nc['Prazo Empenho'] = pd.to_datetime(df_nc['Prazo Empenho'], errors='coerce').dt.strftime('%d/%m/%Y')
-                
-                df_nes = pd.DataFrame(dados['nes'])
-                if not df_nes.empty:
-                    df_nes = df_nes.rename(columns={'numero_ne': 'Número NE', 'data_empenho': 'Data Empenho', 'valor_empenhado': 'Valor Empenhado', 'descricao':'Descrição'})
-                    df_nes = df_nes[['Número NE', 'Data Empenho', 'Valor Empenhado', 'Descrição']]
-                    if 'Data Empenho' in df_nes.columns: df_nes['Data Empenho'] = pd.to_datetime(df_nes['Data Empenho'], errors='coerce').dt.strftime('%d/%m/%Y')
-                    if 'Valor Empenhado' in df_nes.columns: df_nes['Valor Empenhado'] = pd.to_numeric(df_nes['Valor Empenhado'], errors='coerce') 
-                else: df_nes = pd.DataFrame([{" ": "Nenhum empenho registado."}])
-                    
-                df_recolhimentos = pd.DataFrame(dados['recolhimentos'])
-                if not df_recolhimentos.empty:
-                    df_recolhimentos = df_recolhimentos.rename(columns={'data_recolhimento': 'Data Recolhimento', 'valor_recolhido': 'Valor Recolhido', 'descricao':'Descrição'})
-                    df_recolhimentos = df_recolhimentos[['Data Recolhimento', 'Valor Recolhido', 'Descrição']]
-                    if 'Data Recolhimento' in df_recolhimentos.columns: df_recolhimentos['Data Recolhimento'] = pd.to_datetime(df_recolhimentos['Data Recolhimento'], errors='coerce').dt.strftime('%d/%m/%Y')
-                    if 'Valor Recolhido' in df_recolhimentos.columns: df_recolhimentos['Valor Recolhido'] = pd.to_numeric(df_recolhimentos['Valor Recolhido'], errors='coerce')
-                else: df_recolhimentos = pd.DataFrame([{" ": "Nenhum recolhimento registado."}])
-                
+                for col_data in ['Data Recebimento', 'Prazo Empenho']:
+                    if col_data in df_nc.columns: df_nc[col_data] = pd.to_datetime(df_nc[col_data], errors='coerce').dt.strftime('%d/%m/%Y')
+                secoes_data = []; nes_data = []; rec_data = []
+                for s in dados['secoes']: secoes_data.append({'Seção': s['nome'], 'Valor Alocado': s['valor_alocado'], 'Empenhado': s['emp'], 'Recolhido': s['rec'], 'Saldo Real': s['valor_alocado']-s['emp']-s['rec']})
+                for ne in dados['nes']: nes_data.append({'NE': ne['numero_ne'], 'Seção': ne['nome_secao'], 'Data': formatar_data_segura(ne['data_empenho']), 'Valor': ne['valor_empenhado'], 'Desc': ne['descricao']})
+                for r in dados['recolhimentos']: rec_data.append({'Data': formatar_data_segura(r['data_recolhimento']), 'Seção': r['nome_secao'], 'Valor': r['valor_recolhido'], 'Desc': r['descricao']})
                 with io.BytesIO() as file_in_memory:
                     with pd.ExcelWriter(file_in_memory, engine='openpyxl') as writer:
-                         if 'Valor Empenhado' in df_nes.columns: df_nes['Valor Empenhado'] = pd.to_numeric(df_nes['Valor Empenhado'], errors='coerce')
-                         if 'Valor Recolhido' in df_recolhimentos.columns: df_recolhimentos['Valor Recolhido'] = pd.to_numeric(df_recolhimentos['Valor Recolhido'], errors='coerce')
-                         
-                         df_nc.to_excel(writer, sheet_name='Dados da NC', index=False)
-                         df_nes.to_excel(writer, sheet_name='Notas de Empenho', index=False)
-                         df_recolhimentos.to_excel(writer, sheet_name='Recolhimentos', index=False)
+                         df_nc.to_excel(writer, sheet_name='NC Geral', index=False)
+                         pd.DataFrame(secoes_data).to_excel(writer, sheet_name='Saldos por Seção', index=False)
+                         pd.DataFrame(nes_data).to_excel(writer, sheet_name='Empenhos', index=False)
+                         pd.DataFrame(rec_data).to_excel(writer, sheet_name='Recolhimentos', index=False)
                     return file_in_memory.getvalue()
-                    
-            # --- PDF EXTRATO ---
+
             elif tipo == "pdf_extrato":
+                # (Lógica inalterada - Layout Extrato Individual)
                 with io.BytesIO() as file_in_memory:
-                    doc = SimpleDocTemplate(file_in_memory, pagesize=letter); story = []; 
-                    
-                    nc = dados['nc'] 
-                    
+                    doc = SimpleDocTemplate(file_in_memory, pagesize=letter, topMargin=50, leftMargin=40, rightMargin=40)
+                    story = []
+                    nc = dados['nc']
                     styles = getSampleStyleSheet()
-                    style_normal = styles['Normal']; style_normal.alignment = TA_LEFT; style_normal.fontSize = 8
-                    style_right = ParagraphStyle(name='Right', parent=style_normal, alignment=TA_RIGHT)
-                    style_header = ParagraphStyle(name='Header', parent=style_normal, alignment=TA_CENTER, fontName='Helvetica-Bold', textColor=colors.whitesmoke, fontSize=9)
-                    style_center = ParagraphStyle(name='Center', parent=style_normal, alignment=TA_CENTER)
-                    style_title = styles['Heading1']; style_title.alignment = TA_CENTER
-                    style_heading2 = styles['Heading2']
-                    
-                    story.append(Paragraph(f"Extrato da Nota de Crédito: {nc.get('numero_nc', '')}", style_title)); story.append(Spacer(1, 0.1*inch))
-                    story.append(Paragraph(f"PI: {nc.get('pi', '')} | ND: {nc.get('natureza_despesa', '')}", styles['Normal']))
-                    story.append(Paragraph(f"Valor Inicial: {self.formatar_moeda(nc.get('valor_inicial'))} | Prazo Empenho: {datetime.fromisoformat(nc.get('data_validade_empenho', '')).strftime('%d/%m/%Y') if nc.get('data_validade_empenho') else ''}", styles['Normal']))
-                    story.append(Paragraph(f"Data Recebimento: {datetime.fromisoformat(nc.get('data_recebimento', '')).strftime('%d/%m/%Y') if nc.get('data_recebimento') else ''} | UG Gestora: {nc.get('ug_gestora', '')}", styles['Normal']))
-                    story.append(Paragraph("Observação:", style_heading2))
-                    story.append(Paragraph(nc.get('observacao', 'N/A'), styles['Normal']))
-                    story.append(Spacer(1, 0.2*inch))
-
-                    story.append(Paragraph("Notas de Empenho Vinculadas", style_heading2))
-                    header_nes = [Paragraph(h, style_header) for h in ['Número NE', 'Data', 'Valor', 'Descrição']]
-                    pdf_data_nes = [header_nes]
-                    
-                    for ne in dados['nes']:
-                        data = datetime.fromisoformat(ne.get('data_empenho', '')).strftime('%d/%m/%Y') if ne.get('data_empenho') else '??/??/????'
-                        row = [
-                            Paragraph(ne.get('numero_ne', ''), style_center), 
-                            Paragraph(data, style_center), 
-                            Paragraph(self.formatar_moeda(ne.get('valor_empenhado')), style_right), 
-                            Paragraph(ne.get('descricao', ''), style_normal) 
-                        ]
-                        pdf_data_nes.append(row)
-                    
-                    if not dados['nes']: 
-                        pdf_data_nes.append([Paragraph("Nenhum empenho registado.", style_normal), "", "", ""])
-                    
-                    table_nes = Table(pdf_data_nes, repeatRows=1, colWidths=[1.5*inch, 0.8*inch, 1.2*inch, 4*inch])
-                    style_nes = TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.darkblue), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('GRID', (0, 0), (-1, -1), 1, colors.black), ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),])
-                    table_nes.setStyle(style_nes); story.append(table_nes); story.append(Spacer(1, 0.2*inch))
-                    
-                    story.append(Paragraph("Recolhimentos de Saldo Vinculados", style_heading2))
-                    header_rec = [Paragraph(h, style_header) for h in ['Data', 'Valor Recolhido', 'Descrição']]
-                    pdf_data_rec = [header_rec]
-                    
-                    for rec in dados['recolhimentos']:
-                         data = datetime.fromisoformat(rec.get('data_recolhimento', '')).strftime('%d/%m/%Y') if rec.get('data_recolhimento') else '??/??/????'
-                         row = [
-                            Paragraph(data, style_center), 
-                            Paragraph(self.formatar_moeda(rec.get('valor_recolhido')), style_right), 
-                            Paragraph(rec.get('descricao', ''), style_normal) 
-                         ]
-                         pdf_data_rec.append(row)
-                    
-                    if not dados['recolhimentos']: 
-                        pdf_data_rec.append([Paragraph("Nenhum recolhimento registado.", style_normal), "", ""])
-                    
-                    table_rec = Table(pdf_data_rec, repeatRows=1, colWidths=[1*inch, 1.5*inch, 5*inch])
-                    style_rec = TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.darkorange), ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('GRID', (0, 0), (-1, -1), 1, colors.black), ('BACKGROUND', (0, 1), (-1, -1), colors.lightyellow),])
-                    table_rec.setStyle(style_rec); story.append(table_rec)
-
-                    doc.build(story)
+                    style_h2 = ParagraphStyle(name='H2Pro', parent=styles['Heading2'], fontSize=12, textColor=colors.darkblue, spaceAfter=5, spaceBefore=15)
+                    style_label = ParagraphStyle(name='Label', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold')
+                    style_val = ParagraphStyle(name='Val', parent=styles['Normal'], fontSize=9)
+                    story.append(Paragraph(f"Extrato Detalhado: {nc.get('numero_nc', '')}", styles['Heading1']))
+                    dt_rec = formatar_data_segura(nc.get('data_recebimento'))
+                    dt_prz = formatar_data_segura(nc.get('data_validade_empenho'))
+                    grid_data = [[Paragraph("<b>PI:</b>", style_label), Paragraph(str(nc.get('pi')), style_val), Paragraph("<b>ND:</b>", style_label), Paragraph(str(nc.get('natureza_despesa')), style_val)], [Paragraph("<b>Valor Total:</b>", style_label), Paragraph(self.formatar_moeda(nc.get('valor_inicial')), style_val), Paragraph("<b>Saldo Total:</b>", style_label), Paragraph(self.formatar_moeda(nc.get('saldo_disponivel_nc')), style_val)], [Paragraph("<b>UG:</b>", style_label), Paragraph(str(nc.get('ug_gestora')), style_val), Paragraph("<b>Prazo:</b>", style_label), Paragraph(dt_prz, style_val)],]
+                    t_info = Table(grid_data, colWidths=[0.8*inch, 2*inch, 0.8*inch, 2*inch]); t_info.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')])); story.append(t_info)
+                    story.append(Spacer(1, 0.1*inch)); story.append(Paragraph(f"<b>Obs:</b> {nc.get('observacao') or 'N/A'}", style_val))
+                    LARGURA_TOTAL = 7.5 * inch
+                    story.append(Paragraph("Distribuição e Saldos por Seção", style_h2))
+                    h_sec = [Paragraph(x, ParagraphStyle(name='HT', parent=styles['Normal'], textColor=colors.white, fontName='Helvetica-Bold', alignment=TA_CENTER)) for x in ['Seção', 'Alocado', 'Empenhado', 'Recolhido', 'Saldo Real']]
+                    d_sec = [h_sec]
+                    for s in dados['secoes']:
+                        saldo_real = s['valor_alocado'] - s['emp'] - s['rec']
+                        row = [Paragraph(s['nome'], style_val), Paragraph(self.formatar_moeda(s['valor_alocado']), style_val), Paragraph(self.formatar_moeda(s['emp']), style_val), Paragraph(self.formatar_moeda(s['rec']), style_val), Paragraph(self.formatar_moeda(saldo_real), ParagraphStyle(name='BoldRight', parent=style_val, fontName='Helvetica-Bold'))]
+                        d_sec.append(row)
+                    t_sec = Table(d_sec, colWidths=[2.5*inch, 1.25*inch, 1.25*inch, 1.25*inch, 1.25*inch]); t_sec.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.darkgreen), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey)])); story.append(t_sec)
+                    story.append(Paragraph("Histórico de Empenhos", style_h2))
+                    h_ne = [Paragraph(x, ParagraphStyle(name='HT', textColor=colors.white, fontName='Helvetica-Bold')) for x in ['NE', 'Seção', 'Data', 'Valor', 'Desc']]
+                    d_ne = [h_ne]
+                    if not dados['nes']: d_ne.append(["Nenhum empenho", "", "", "", ""])
+                    else:
+                        for ne in dados['nes']:
+                            row = [Paragraph(ne['numero_ne'], style_val), Paragraph(ne['nome_secao'], style_val), Paragraph(formatar_data_segura(ne['data_empenho']), style_val), Paragraph(self.formatar_moeda(ne['valor_empenhado']), style_val), Paragraph(ne.get('descricao', ''), style_val)]
+                            d_ne.append(row)
+                    t_ne = Table(d_ne, colWidths=[1.2*inch, 1.5*inch, 0.8*inch, 1.0*inch, 3.0*inch]); t_ne.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.darkblue), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.aliceblue])])); story.append(t_ne)
+                    story.append(Paragraph("Histórico de Recolhimentos", style_h2))
+                    h_rec = [Paragraph(x, ParagraphStyle(name='HT', textColor=colors.white, fontName='Helvetica-Bold')) for x in ['Data', 'Seção', 'Valor', 'Desc']]
+                    d_rec = [h_rec]
+                    if not dados['recolhimentos']: d_rec.append(["Nenhum recolhimento", "", "", ""])
+                    else:
+                        for r in dados['recolhimentos']:
+                            row = [Paragraph(formatar_data_segura(r['data_recolhimento']), style_val), Paragraph(r['nome_secao'], style_val), Paragraph(self.formatar_moeda(r['valor_recolhido']), style_val), Paragraph(r.get('descricao', ''), style_val)]
+                            d_rec.append(row)
+                    t_rec = Table(d_rec, colWidths=[1.0*inch, 1.5*inch, 1.2*inch, 3.8*inch]); t_rec.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), colors.darkorange), ('TEXTCOLOR', (0,0), (-1,0), colors.white), ('GRID', (0,0), (-1,-1), 0.5, colors.grey)])); story.append(t_rec)
+                    doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
                     return file_in_memory.getvalue()
-            
-            else:
-                raise Exception(f"Tipo de relatório desconhecido: {tipo}")
-        
+            else: raise Exception(f"Tipo desconhecido: {tipo}")
         except Exception as e:
-            print(f"Erro ao gerar bytes para {tipo}: {e}")
+            print(f"Erro ao gerar bytes: {e}")
             traceback.print_exc()
-            raise e # Propaga o erro
+            raise e
             
 # --- FIM DAS ALTERAÇÕES ---
 

@@ -3,9 +3,11 @@
 # (Adiciona todos os campos orçamentários ao modal "Quick View")
 
 import flet as ft
-from supabase_client import supabase # Cliente 'anon'
-from datetime import datetime
 import traceback 
+from datetime import datetime
+# REMOVA: from supabase_client import supabase
+# ADICIONE:
+import database # Importa o motor do PostgreSQL 17 local
 
 import io       
 import httpx    
@@ -52,7 +54,7 @@ class NcsView(ft.Column):
                 ft.DataColumn(ft.Text("Ações", weight=ft.FontWeight.BOLD)),
             ], 
             rows=[], 
-            expand=True, 
+            #expand=True, 
             border=ft.border.all(1, "grey200"), 
             border_radius=8,
         )
@@ -125,7 +127,36 @@ class NcsView(ft.Column):
         self.btn_abrir_data_validade = ft.IconButton(icon="CALENDAR_MONTH", tooltip="Selecionar Prazo Empenho", on_click=lambda e: self.open_datepicker(self.date_picker_validade))
         self.date_picker_recebimento = ft.DatePicker(on_change=self.handle_date_recebimento_change, first_date=datetime(2020, 1, 1), last_date=datetime(2030, 12, 31))
         self.date_picker_validade = ft.DatePicker(on_change=self.handle_date_validade_change, first_date=datetime(2020, 1, 1), last_date=datetime(2030, 12, 31))
-        self.modal_txt_valor_inicial = ft.TextField(label="Valor Inicial", prefix="R$", on_change=self.format_currency_input, keyboard_type=ft.KeyboardType.NUMBER)
+        # Usamos 'prefix' (Control) em vez de 'prefix_text' (String) para evitar bugs de cursor
+        # Linha 130 aprox.
+        self.modal_txt_valor_inicial = ft.TextField(
+            label="Valor Inicial",
+            prefix_text="R$ ",
+            hint_text="Ex: 1500,50",
+            # Filtro: permite apenas dígitos e uma vírgula ou ponto decimal
+            input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9]*[.,]?[0-9]{0,2}$", replacement_string=""),
+            on_change=None # Removemos a função format_currency_input
+        )
+        # No __init__ da NcsView:
+        self.modal_rec_secao = ft.Dropdown(
+            label="Seção / Cota",
+            hint_text="De qual seção retirar o saldo?",
+            options=[],
+            expand=True
+        )
+        
+        # Linha 180 aprox.
+        self.modal_rec_valor = ft.TextField(
+            label="Valor Recolhido",
+            prefix_text="R$ ",
+            hint_text="Ex: 100,00",
+            input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9]*[.,]?[0-9]{0,2}$", replacement_string=""),
+            on_change=None
+        )
+        self.date_picker_recolhimento = ft.DatePicker(
+            on_change=lambda e: setattr(self.modal_rec_data, "value", e.control.value.strftime('%Y-%m-%d')) or self.modal_rec_data.update()
+        )
+        self.page.overlay.append(self.date_picker_recolhimento)
         self.modal_txt_ptres = ft.TextField(
             label="PTRES",
             max_length=6,
@@ -167,7 +198,6 @@ class NcsView(ft.Column):
         self.history_recolhimentos_list = ft.Column(scroll=ft.ScrollMode.ADAPTIVE, height=150)
         self.recolhimento_modal_title = ft.Text("Recolher Saldo da NC")
         self.modal_rec_data = ft.TextField(label="Data do Recolhimento", hint_text="AAAA-MM-DD", autofocus=True)
-        self.modal_rec_valor = ft.TextField(label="Valor Recolhido", prefix="R$", on_change=self.format_currency_input, keyboard_type=ft.KeyboardType.NUMBER)
         self.modal_rec_descricao = ft.TextField(label="Descrição (Opcional)")
         self.modal_form_loading_ring = ft.ProgressRing(visible=False, width=24, height=24)
         self.modal_form_btn_cancelar = ft.TextButton("Cancelar", on_click=self.close_modal)
@@ -177,11 +207,34 @@ class NcsView(ft.Column):
         self.modal_rec_btn_salvar = ft.ElevatedButton("Confirmar Recolhimento", on_click=self.save_recolhimento, icon="KEYBOARD_RETURN")
         self.modal_form = ft.AlertDialog(modal=True, title=ft.Text("Adicionar Nova Nota de Crédito"), content=ft.Column([self.modal_txt_numero_nc, self.distribuicoes_list, self.btn_add_distribuicao, ft.Row([self.modal_txt_data_recebimento, self.btn_abrir_data_recebimento,], spacing=10), ft.Row([self.modal_txt_data_validade, self.btn_abrir_data_validade,], spacing=10), self.modal_txt_valor_inicial, ft.Row([self.modal_txt_ptres, self.modal_txt_nd, self.modal_txt_fonte]), ft.Row([self.modal_txt_pi, self.modal_txt_ug_gestora]), self.modal_txt_observacao,], height=600, width=500, scroll=ft.ScrollMode.ADAPTIVE,), actions=[self.modal_form_loading_ring, self.modal_form_btn_cancelar, self.modal_form_btn_salvar,], actions_alignment=ft.MainAxisAlignment.END,)
         self.history_modal = ft.AlertDialog(modal=True, title=self.history_modal_title, content=ft.Column([ft.Text("Notas de Empenho (NEs) Vinculadas:", weight=ft.FontWeight.BOLD), ft.Container(content=self.history_nes_list, border=ft.border.all(1, "grey300"), border_radius=5, padding=10), ft.Divider(height=10), ft.Text("Recolhimentos de Saldo Vinculados:", weight=ft.FontWeight.BOLD), ft.Container(content=self.history_recolhimentos_list, border=ft.border.all(1, "grey300"), border_radius=5, padding=10),], height=400, width=600,), actions=[ft.TextButton("Fechar", on_click=self.close_history_modal)], actions_alignment=ft.MainAxisAlignment.END,)
-        self.recolhimento_modal = ft.AlertDialog(modal=True, title=self.recolhimento_modal_title, content=ft.Column([self.modal_rec_data, self.modal_rec_valor, self.modal_rec_descricao,], height=250, width=400,), actions=[self.modal_rec_loading_ring, self.modal_rec_btn_cancelar, self.modal_rec_btn_salvar,], actions_alignment=ft.MainAxisAlignment.END,)
+        self.recolhimento_modal = ft.AlertDialog(
+            modal=True,
+            title=self.recolhimento_modal_title,
+            content=ft.Column([
+                # AQUI ENTRA O NOVO CAMPO EM PRIMEIRO LUGAR:
+                self.modal_rec_secao,  # <--- NOVO: O usuário escolhe a seção primeiro
+
+                # Abaixo seguem os campos que já existiam:
+                ft.Row([
+                    self.modal_rec_data, 
+                    ft.IconButton(icon="CALENDAR_MONTH", on_click=lambda _: self.date_picker_rec.pick_date())
+                ]),
+                self.modal_rec_valor,
+                self.modal_rec_descricao
+            ], 
+            height=350, # <--- ALTERADO: Aumentei de 250 para 350 para caber o novo campo sem apertar
+            width=400),
+            actions=[
+                self.modal_rec_loading_ring, 
+                self.modal_rec_btn_cancelar, 
+                self.modal_rec_btn_salvar,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
         self.confirm_delete_nc_dialog = ft.AlertDialog(modal=True, title=ft.Text("Confirmar Exclusão de Nota de Crédito"), content=ft.Text("Atenção!\nTem a certeza de que deseja excluir esta Nota de Crédito?\nTodas as Notas de Empenho e Recolhimentos vinculados também serão excluídos.\nEsta ação não pode ser desfeita."), actions=[ft.TextButton("Cancelar", on_click=lambda e: self.close_confirm_delete_nc(None)), ft.ElevatedButton("Excluir NC", color="white", bgcolor="red", on_click=self.confirm_delete_nc),], actions_alignment=ft.MainAxisAlignment.END,)
 
         # --- Filtros (Sem alteração) ---
-        self.filtro_pesquisa_nc = ft.TextField(label="Pesquisar por Nº NC", hint_text="Digite parte do número...", expand=True, on_change=self.filtrar_ncs_em_tempo_real, prefix_icon=ft.Icons.SEARCH)
+        self.filtro_pesquisa_nc = ft.TextField(label="Pesquisar por Nº NC", hint_text="Digite parte do número...", expand=True, on_change=self.filtrar_ncs_em_tempo_real, prefix_icon=ft.icons.SEARCH)
         self.filtro_pi = ft.Dropdown(label="Filtrar por PI", options=[ft.dropdown.Option(text="Carregando...", disabled=True)], expand=True, on_change=self.on_pi_filter_change)
         self.filtro_nd = ft.Dropdown(label="Filtrar por ND", options=[ft.dropdown.Option(text="Carregando...", disabled=True)], expand=True, on_change=self.load_ncs_data_wrapper)
         self.filtro_status = ft.Dropdown(label="Filtrar por Status", options=[ft.dropdown.Option(text="Ativa", key="Ativa"), ft.dropdown.Option(text="Sem Saldo", key="Sem Saldo"), ft.dropdown.Option(text="Vencida", key="Vencida"), ft.dropdown.Option(text="Cancelada", key="Cancelada"),], width=200, on_change=self.load_ncs_data_wrapper)
@@ -250,17 +303,17 @@ class NcsView(ft.Column):
         # Card 2: Tabela de Dados
         card_tabela_ncs = ft.Card(
             elevation=4,
-            expand=True, 
+            #expand=True, 
             content=ft.Container(
                 padding=20,
                 content=ft.Column(
                     [
                         ft.Container(
                             content=self.tabela_ncs,
-                            expand=True
+                            #expand=True
                         )
                     ],
-                    expand=True
+                    #expand=True
                 )
             )
         )
@@ -278,6 +331,10 @@ class NcsView(ft.Column):
         self.page.overlay.append(self.file_picker_import) 
         self.page.overlay.append(self.date_picker_recebimento) 
         self.page.overlay.append(self.date_picker_validade)   
+        self.date_picker_rec = ft.DatePicker(
+            on_change=lambda e: setattr(self.modal_rec_data, "value", e.control.value.strftime('%Y-%m-%d')) or self.modal_rec_data.update()
+        )
+        self.page.overlay.append(self.date_picker_rec)
         
         self.on_mount = self.on_view_mount
 
@@ -294,47 +351,77 @@ class NcsView(ft.Column):
         
     # --- (INÍCIO DA ATUALIZAÇÃO v1.6) ---
     def open_quick_view_modal(self, e, nc_obj):
-        """Abre o modal de 'Quick View' com os dados completos da NC."""
-        
-        # Calcula o percentual
-        valor_ini = float(nc_obj.get('valor_inicial', 0))
-        total_emp = float(nc_obj.get('total_empenhado', 0)) 
-        if valor_ini > 0:
-            percentual_str = f"{(total_emp / valor_ini) * 100:.1f}%"
-        else:
-            percentual_str = "N/A"
+        """Exibe o extrato COMPLETO (Saldos reais, NEs e Recolhimentos) no Quick View."""
+        try:
+            nc_id = nc_obj.get('id_nc')
+
+            # 1. Busca detalhamento das SEÇÕES com saldo corrigido (Alocado - Empenhado - Recolhido)
+            sql_sec = """
+                SELECT s.nome, d.valor_alocado, 
+                       COALESCE((SELECT SUM(valor_empenhado) FROM notas_de_empenho WHERE id_distribuicao = d.id), 0) as emp,
+                       COALESCE((SELECT SUM(valor_recolhido) FROM recolhimentos_de_saldo WHERE id_distribuicao = d.id), 0) as rec
+                FROM distribuicao_nc_secoes d
+                JOIN secoes s ON s.id = d.id_secao
+                WHERE d.id_nc = %s
+            """
+            fatias = database.execute_query(sql_sec, (nc_id,))
             
-        # Formata dados
-        data_val_str = datetime.fromisoformat(nc_obj['data_validade_empenho']).strftime('%d/%m/%Y')
-        data_rec_str = datetime.fromisoformat(nc_obj['data_recebimento']).strftime('%d/%m/%Y')
-        
-        # Busca nome da Seção
-        secao_id = nc_obj.get('id_secao')
-        secao_nome = self.secoes_cache.get(secao_id, "N/A") # Get name from cache
-        
-        # Preenche os controlos do modal
-        self.quick_view_title.value = f"Detalhes: {nc_obj.get('numero_nc')}"
-        self.qv_status.value = f"Status: {nc_obj.get('status_calculado')}"
-        
-        # Info Orçamentária
-        self.qv_pi_nd.value = f"PI: {nc_obj.get('pi', 'N/A')}  |  ND: {nc_obj.get('natureza_despesa', 'N/A')}"
-        self.qv_ptres_fonte.value = f"PTRES: {nc_obj.get('ptres', 'N/A')}  |  Fonte: {nc_obj.get('fonte', 'N/A')}"
-        self.qv_ug_secao.value = f"UG Gestora: {nc_obj.get('ug_gestora', 'N/A')}  |  Seção: {secao_nome}"
-        
-        # Valores
-        self.qv_valor_inicial.value = f"Valor Inicial: {self.formatar_moeda(nc_obj.get('valor_inicial'))}"
-        self.qv_saldo.value = f"Saldo Disponível: {self.formatar_moeda(nc_obj.get('saldo_disponivel'))}"
-        self.qv_percent_empenhado.value = f"% Empenhado: {percentual_str}"
-        
-        # Prazos
-        self.qv_prazo.value = f"Prazo Empenho: {data_val_str} (Recebido em: {data_rec_str})"
-        
-        # Observação
-        self.qv_observacao.value = nc_obj.get('observacao') or "Nenhuma observação."
-        
-        self.quick_view_modal.open = True
-        self.quick_view_modal.update()
-    # --- (FIM DA ATUALIZAÇÃO v1.6) ---
+            txt_dist = ""
+            for f in fatias:
+                # CÁLCULO DO SALDO REAL (Ponto 3 resolvido)
+                saldo_real = f['valor_alocado'] - f['emp'] - f['rec']
+                txt_dist += f"• {f['nome']}: {self.formatar_moeda(f['valor_alocado'])} (Saldo Real: {self.formatar_moeda(saldo_real)})\n"
+
+            # 2. Busca o histórico de EMPENHOS (NEs)
+            sql_nes = "SELECT numero_ne, valor_empenhado, data_empenho FROM notas_de_empenho n JOIN distribuicao_nc_secoes d ON n.id_distribuicao = d.id WHERE d.id_nc = %s ORDER BY data_empenho DESC"
+            nes_list = database.execute_query(sql_nes, (nc_id,))
+            
+            txt_nes = ""
+            if nes_list:
+                for ne in nes_list:
+                    dt = ne['data_empenho'].strftime('%d/%m/%Y') if ne['data_empenho'] else "N/A"
+                    txt_nes += f"• {ne['numero_ne']} - {self.formatar_moeda(ne['valor_empenhado'])} ({dt})\n"
+            else:
+                txt_nes = "Nenhum empenho registrado."
+
+            # 3. Busca o histórico de RECOLHIMENTOS
+            sql_rec = "SELECT valor_recolhido, data_recolhimento FROM recolhimentos_de_saldo WHERE id_nc = %s ORDER BY data_recolhimento DESC"
+            rec_list = database.execute_query(sql_rec, (nc_id,))
+
+            txt_rec = ""
+            if rec_list:
+                for r in rec_list:
+                    dt = r['data_recolhimento'].strftime('%d/%m/%Y') if r['data_recolhimento'] else "N/A"
+                    txt_rec += f"• Devolução: {self.formatar_moeda(r['valor_recolhido'])} ({dt})\n"
+            else:
+                txt_rec = "Nenhum recolhimento registrado."
+
+            # 4. Montagem do Texto no Modal
+            self.quick_view_title.value = f"Extrato Completo: {nc_obj['numero_nc']}"
+            self.qv_status.value = f"STATUS: {nc_obj['status_calculado']}"
+            
+            self.qv_pi_nd.value = f"PI: {nc_obj['pi']} | ND: {nc_obj['natureza_despesa']}"
+            self.qv_ptres_fonte.value = f"PTRES: {nc_obj['ptres']} | FONTE: {nc_obj['fonte']}"
+            
+            # Adicionamos os extratos aqui no campo de texto grande
+            self.qv_ug_secao.value = (
+                f"UG GESTORA: {nc_obj['ug_gestora']}\n\n"
+                f"--- SALDOS POR SEÇÃO ---\n{txt_dist}\n"
+                f"--- HISTÓRICO DE EMPENHOS ---\n{txt_nes}\n"
+                f"--- HISTÓRICO DE RECOLHIMENTOS ---\n{txt_rec}"
+            )
+            
+            self.qv_valor_inicial.value = f"VALOR TOTAL NC: {self.formatar_moeda(nc_obj['valor_total_nc'])}"
+            self.qv_saldo.value = f"SALDO DISPONÍVEL GERAL: {self.formatar_moeda(nc_obj['saldo_disponivel_nc'])}"
+            
+            dt = nc_obj.get('data_validade_empenho')
+            self.qv_prazo.value = f"PRAZO LIMITE: {datetime.fromisoformat(str(dt)).strftime('%d/%m/%Y') if dt else 'N/A'}"
+            self.qv_observacao.value = nc_obj.get('observacao') or "Sem observação."
+
+            self.quick_view_modal.open = True
+            self.page.update()
+        except Exception as ex:
+            self.show_error(f"Erro ao carregar extrato completo: {ex}")
 
     def close_quick_view_modal(self, e):
         self.quick_view_modal.open = False
@@ -365,48 +452,20 @@ class NcsView(ft.Column):
         self.page.update()
         
     def formatar_moeda(self, valor):
+        """Formata valores para exibição na tabela (Ex: R$ 1.500,50)."""
         try: 
             val = float(valor)
+            # TÉCNICO: f-string com separador de milhar e substituição manual para padrão BR
             return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         except (ValueError, TypeError): 
             return "R$ 0,00"
             
     def formatar_valor_para_campo(self, valor):
+        """Retorna o valor como string simples (ex: 1500,50) para o campo."""
         try: 
             val = float(valor)
             return f"{val:.2f}".replace(".", ",")
-        except (ValueError, TypeError): 
-            return "0,00"
-            
-    def format_currency_input(self, e: ft.ControlEvent):
-        try:
-            current_value = e.control.value or ""
-            digits = "".join(filter(str.isdigit, current_value))
-
-            if not digits:
-                e.control.value = ""
-                if self.page: self.page.update()
-                return
-
-            int_value = int(digits)
-            val_float = int_value / 100.0
-            formatted_value = f"{val_float:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            
-            if e.control.value != formatted_value:
-                e.control.value = formatted_value
-                e.control.update()
-                
-        except Exception as ex:
-            print(f"Erro ao formatar moeda: {ex}")
-            
-    def open_datepicker(self, picker: ft.DatePicker):
-        if picker and self.page: 
-             if picker not in self.page.overlay:
-                 self.page.overlay.append(picker)
-                 self.page.update()
-             picker.visible = True
-             picker.open = True
-             self.page.update()
+        except: return ""
 
     def handle_date_recebimento_change(self, e):
         selected_date = e.control.value
@@ -443,14 +502,15 @@ class NcsView(ft.Column):
             self.show_error(f"Erro ao tentar abrir diálogo: {ex}")
     
     def load_secoes_cache(self):
-        print("NcsView: A carregar cache de seções...")
+        """Busca o cache de seções diretamente do PostgreSQL 17 local."""
+        print("NcsView: A carregar cache de seções do banco local...")
         try:
-            resposta = supabase.table('secoes').select('id, nome').execute()
-            if resposta.data:
-                self.secoes_cache = {secao['id']: secao['nome'] for secao in resposta.data}
-                print("NcsView: Cache de seções carregado.")
+            # TÉCNICO: Consulta SQL direta substituindo o supabase.table
+            resposta = database.execute_query("SELECT id, nome FROM secoes ORDER BY nome")
+            if resposta:
+                self.secoes_cache = {secao['id']: secao['nome'] for secao in resposta}
+                print(f"NcsView: {len(self.secoes_cache)} seções carregadas no cache.")
         except Exception as ex:
-            print("--- ERRO CRÍTICO (TRACEBACK) NO NCS [load_secoes_cache] ---")
             traceback.print_exc()
             self.handle_db_error(ex, "carregar cache de seções")
             
@@ -471,82 +531,43 @@ class NcsView(ft.Column):
             self.show_error(f"Erro ao carregar seções: {ex}")
             
     def load_filter_options(self, pi_selecionado=None):
+        """Atualiza os dropdowns de filtro usando dados do banco local."""
         try:
             if not self.page: return 
             
-            # --- COMPLEMENTO: Lógica de Cache ---
             if pi_selecionado is None:
-                pis_cache = self.page.session.get("cache_pis")
-                nds_cache = self.page.session.get("cache_nds")
-                if pis_cache and nds_cache:
-                    self.filtro_pi.options = [ft.dropdown.Option(text="Todos os PIs", key=None)] + \
-                                             [ft.dropdown.Option(text=p, key=p) for p in sorted(pis_cache) if p]
-                    self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key=None)] + \
-                                             [ft.dropdown.Option(text=n, key=n) for n in sorted(nds_cache) if n]
-                    self.update()
-                    return # Para aqui se carregou do cache
-            if pi_selecionado is None:
-                pis_cache = self.page.session.get("cache_pis")
-                nds_cache = self.page.session.get("cache_nds")
-
-                if pis_cache is not None and nds_cache is not None:
-                    print("NcsView: Carregando filtros via Cache da Sessão.")
-                    self.filtro_pi.options = [ft.dropdown.Option(text="Todos os PIs", key=None)]
-                    for pi in sorted(pis_cache):
-                        if pi: self.filtro_pi.options.append(ft.dropdown.Option(text=pi, key=pi))
-                    
-                    self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key=None)]
-                    for nd in sorted(nds_cache):
-                        if nd: self.filtro_nd.options.append(ft.dropdown.Option(text=nd, key=nd))
-                    
-                    self.update()
-                    return
-            if pi_selecionado is None:
-                print("A carregar opções de filtro (PIs e NDs)...")
-                pis = supabase.rpc('get_distinct_pis').execute()
-                self.filtro_pi.options.clear()
-                self.filtro_pi.options.append(ft.dropdown.Option(text="Todos os PIs", key=None)) 
-                if pis.data:
-                    for pi in sorted(pis.data): 
-                        if pi: self.filtro_pi.options.append(ft.dropdown.Option(text=pi, key=pi))
+                # Busca PIs Únicos
+                pis = database.execute_query("SELECT DISTINCT pi FROM notas_de_credito ORDER BY pi")
+                self.filtro_pi.options = [ft.dropdown.Option(text="Todos os PIs", key="")]
+                for row in pis:
+                    if row['pi']: self.filtro_pi.options.append(ft.dropdown.Option(text=row['pi'], key=row['pi']))
                 
-                nds = supabase.rpc('get_distinct_nds').execute()
-                self.filtro_nd.options.clear()
-                self.filtro_nd.options.append(ft.dropdown.Option(text="Todas as NDs", key=None)) 
-                if nds.data:
-                    for nd in sorted(nds.data): 
-                        if nd: self.filtro_nd.options.append(ft.dropdown.Option(text=nd, key=nd))
-                print("Opções de filtro iniciais carregadas.")
+                # Busca NDs Únicas
+                nds = database.execute_query("SELECT DISTINCT natureza_despesa FROM notas_de_credito ORDER BY natureza_despesa")
+                self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key="")]
+                for row in nds:
+                    if row['natureza_despesa']: self.filtro_nd.options.append(ft.dropdown.Option(text=row['natureza_despesa'], key=row['natureza_despesa']))
             else:
-                print(f"A carregar NDs para o PI: {pi_selecionado}...")
-                self.filtro_nd.disabled = True 
-                self.filtro_nd.update()
-                nds = supabase.rpc('get_distinct_nds_for_pi', {'p_pi': pi_selecionado}).execute()
-                self.filtro_nd.options.clear()
-                self.filtro_nd.options.append(ft.dropdown.Option(text="Todas as NDs", key=None))
-                if nds.data:
-                    for nd in sorted(nds.data):
-                         if nd: self.filtro_nd.options.append(ft.dropdown.Option(text=nd, key=nd))
-                print("Filtro ND atualizado.")
-                
-            self.filtro_nd.disabled = False 
+                # Busca NDs vinculadas ao PI (Filtro dependente)
+                sql = "SELECT DISTINCT natureza_despesa FROM notas_de_credito WHERE pi = %s ORDER BY natureza_despesa"
+                nds = database.execute_query(sql, (pi_selecionado,))
+                self.filtro_nd.options = [ft.dropdown.Option(text="Todas as NDs", key="")]
+                for row in nds:
+                    self.filtro_nd.options.append(ft.dropdown.Option(text=row['natureza_despesa'], key=row['natureza_despesa']))
             
-            if pi_selecionado is None:
-                self.update() 
-                
-        except Exception as ex: 
-            print("--- ERRO CRÍTICO (TRACEBACK) NO NCS [load_filter_options] ---")
-            traceback.print_exc()
-            print("---------------------------------------------------------------")
-            
-            print(f"Erro ao carregar opções de filtro: {ex}")
+            if self.page: self.update()
+        except Exception as ex:
             self.handle_db_error(ex, "carregar filtros")
             
     def on_pi_filter_change(self, e):
-        pi_val = self.filtro_pi.value if self.filtro_pi.value else None
+        pi_val = self.filtro_pi.value if self.filtro_pi.value and self.filtro_pi.value != "None" else None
         self.filtro_nd.value = None 
-        self.load_filter_options(pi_selecionado=pi_val) 
-        self.load_ncs_data() 
+        # Se PI for limpo, recarrega todas as NDs globais do cache da sessão
+        if not pi_val:
+            self.load_filter_options(pi_selecionado=None)
+        else:
+            self.load_filter_options(pi_selecionado=pi_val) 
+        self.load_ncs_data()
 
     def limpar_filtros(self, e):
         print("A limpar filtros...")
@@ -562,98 +583,64 @@ class NcsView(ft.Column):
         self.load_ncs_data()
         
     def load_ncs_data(self):
-        print("NCs: A carregar dados com filtros...")
+        """Carrega a tabela eliminando duplicatas por espaços e corrigindo filtros."""
         self.progress_ring.visible = True
         self.page.update()
-        
         try:
-            # (v1.6) Busca todos os dados para o modal de Quick View
-            query = supabase.table('notas_de_credito').select(
-                '*, distribuicao_nc_secoes(*)'
-            )
+            # TÉCNICO: Usamos TRIM para ignorar espaços e garantir que NCs iguais sejam unificadas
+            sql = "SELECT DISTINCT ON (TRIM(numero_nc)) * FROM ncs_com_saldos WHERE 1=1"
+            params = []
+
+            # 1. Filtro de Pesquisa (Texto)
+            if self.filtro_pesquisa_nc.value:
+                sql += " AND numero_nc ILIKE %s"
+                params.append(f"%{self.filtro_pesquisa_nc.value}%")
             
-            if self.filtro_pesquisa_nc.value: 
-                query = query.ilike('numero_nc', f"%{self.filtro_pesquisa_nc.value}%")
-            if self.filtro_status.value: 
-                query = query.eq('status_calculado', self.filtro_status.value)
-            if self.filtro_pi.value: 
-                query = query.eq('pi', self.filtro_pi.value)
-            if self.filtro_nd.value: 
-                query = query.eq('natureza_despesa', self.filtro_nd.value)
-            resposta = query.order('data_recebimento', desc=True).execute()
+            # 2. Filtros Dropdown (Corrigido: ignora se for vazio ou string "None")
+            if self.filtro_status.value and self.filtro_status.value not in ["", "None"]:
+                sql += " AND status_calculado = %s"; params.append(self.filtro_status.value)
+                
+            if self.filtro_pi.value and self.filtro_pi.value not in ["", "None"]:
+                sql += " AND pi = %s"; params.append(self.filtro_pi.value)
+                
+            if self.filtro_nd.value and self.filtro_nd.value not in ["", "None"]:
+                sql += " AND natureza_despesa = %s"; params.append(self.filtro_nd.value)
+
+            # OBRIGATÓRIO: O ORDER BY deve seguir o TRIM do DISTINCT
+            sql += " ORDER BY TRIM(numero_nc) ASC, data_recebimento DESC"
+            
+            resposta = database.execute_query(sql, tuple(params))
             
             self.tabela_ncs.rows.clear()
-            if resposta.data:
-                for nc in resposta.data:
+            if resposta:
+                for nc in resposta:
+                    # CORREÇÃO VITAL: Usar 'id_nc' (que é o que a View retorna agora)
+                    actual_id = nc.get('id_nc') 
                     
+                    # Busca as seções vinculadas usando o ID correto
+                    dist_sql = "SELECT * FROM distribuicao_nc_secoes WHERE id_nc = %s"
+                    nc['distribuicao_nc_secoes'] = database.execute_query(dist_sql, (actual_id,))
+
                     self.tabela_ncs.rows.append(
-                        ft.DataRow(
-                            cells=[
-                                # (v1.6) Nº NC como "botão" clicável
-                                ft.DataCell(
-                                    ft.TextButton(
-                                        text=nc.get('numero_nc', ''),
-                                        on_click=lambda e, nc_obj=nc: self.open_quick_view_modal(e, nc_obj),
-                                        style=ft.ButtonStyle(padding=0)
-                                    )
-                                ),
-                                # (v1.6) Colunas essenciais
-                                ft.DataCell(ft.Text(nc.get('pi', ''))),
-                                ft.DataCell(ft.Text(nc.get('natureza_despesa', ''))),
-                                ft.DataCell(ft.Text(self.formatar_moeda(nc.get('valor_inicial')))),
-                                ft.DataCell(ft.Text(self.formatar_moeda(nc.get('saldo_disponivel')), weight=ft.FontWeight.BOLD)),
-                                # (v1.6) Ações
-                                ft.DataCell(
-                                    ft.PopupMenuButton(
-                                        icon="MORE_VERT", 
-                                        items=[
-                                            ft.PopupMenuItem(
-                                                text="Editar NC (Detalhes)",
-                                                icon="EDIT",
-                                                on_click=lambda e, nc_obj=nc: self.open_edit_modal(nc_obj)
-                                            ),
-                                            ft.PopupMenuItem(
-                                                text="Ver Extrato (NEs)",
-                                                icon="HISTORY",
-                                                on_click=lambda e, nc_obj=nc: self.open_history_modal(nc_obj)
-                                            ),
-                                            ft.PopupMenuItem(
-                                                text="Recolher Saldo",
-                                                icon="KEYBOARD_RETURN",
-                                                on_click=lambda e, nc_obj=nc: self.open_recolhimento_modal(nc_obj)
-                                            ),
-                                            ft.PopupMenuItem(), # Divisor
-                                            ft.PopupMenuItem(
-                                                text="Excluir NC",
-                                                icon="DELETE",
-                                                on_click=lambda e, nc_obj=nc: self.open_confirm_delete_nc(nc_obj)
-                                            ),
-                                        ]
-                                    )
-                                ),
-                            ]
-                        )
+                        ft.DataRow(cells=[
+                            # Passamos o objeto 'nc' completo, que agora tem as seções dentro
+                            ft.DataCell(ft.TextButton(text=nc['numero_nc'], on_click=lambda e, o=nc: self.open_quick_view_modal(e, o))),
+                            ft.DataCell(ft.Text(nc.get('pi', ''))),
+                            ft.DataCell(ft.Text(nc.get('natureza_despesa', ''))),
+                            ft.DataCell(ft.Text(self.formatar_moeda(nc.get('valor_total_nc')))),
+                            ft.DataCell(ft.Text(self.formatar_moeda(nc.get('saldo_disponivel_nc')), weight=ft.FontWeight.BOLD)),
+                            ft.DataCell(ft.PopupMenuButton(icon="MORE_VERT", items=[
+                                ft.PopupMenuItem(text="Editar NC", icon="EDIT", on_click=lambda e, o=nc: self.open_edit_modal(o)),
+                                ft.PopupMenuItem(text="Recolher Saldo", icon="KEYBOARD_RETURN", on_click=lambda e, o=nc: self.open_recolhimento_modal(o)),
+                                ft.PopupMenuItem(text="Excluir NC", icon="DELETE", on_click=lambda e, o=nc: self.open_confirm_delete_nc(o)),
+                            ]))
+                        ])
                     )
             else:
-                self.tabela_ncs.rows.append(
-                    ft.DataRow(cells=[ 
-                        ft.DataCell(ft.Text("Nenhuma Nota de Crédito encontrada com estes filtros.", italic=True)), 
-                        ft.DataCell(ft.Text("")), ft.DataCell(ft.Text("")), 
-                        ft.DataCell(ft.Text("")), ft.DataCell(ft.Text("")),
-                        ft.DataCell(ft.Text("")),
-                    ])
-                )
-            print("NCs: Dados carregados com sucesso.")
-            
-        except Exception as ex: 
-            print("--- ERRO CRÍTICO (TRACEBACK) NO NCS [load_ncs_data] ---")
-            traceback.print_exc()
-            print("---------------------------------------------------------")
-            
-            print(f"Erro ao carregar NCs: {ex}")
+                self.tabela_ncs.rows.append(ft.DataRow(cells=[ft.DataCell(ft.Text("Nenhuma NC encontrada.", italic=True)), *[ft.DataCell(ft.Text(""))]*5]))
+        except Exception as ex:
             self.handle_db_error(ex, "carregar NCs")
-            
-        finally: 
+        finally:
             self.progress_ring.visible = False
             self.page.update()
         
@@ -691,27 +678,38 @@ class NcsView(ft.Column):
         self.modal_txt_numero_nc.focus() 
 
     def open_edit_modal(self, nc):
+        """
+        Preenche o modal de edição com todos os dados da NC e define o ID de controle.
+        Esta função é vital para evitar o erro de 'UniqueViolation' ao salvar.
+        """
         print(f"A abrir modal de EDIÇÃO para: {nc['numero_nc']}")
-        self.nc_em_edicao = nc # Guarda a NC que está sendo editada
         
-        # 1. Carregamento dos campos de texto (Agora incluindo Datas e Valor)
-        self.modal_txt_numero_nc.value = nc['numero_nc']
-        self.modal_txt_fonte.value = str(nc.get('fonte', ''))
+        # DEFINIÇÃO DO ID: Garante que o método save_nc saiba que trata-se de um UPDATE
+        self.id_sendo_editado = nc.get('id_nc')
+        self.nc_em_edicao = nc 
+        
+        # 1. CARREGAMENTO DOS CAMPOS DE TEXTO E IDENTIFICAÇÃO
+        self.modal_txt_numero_nc.value = str(nc.get('numero_nc', ''))
+        
+        # 2. CARREGAMENTO DOS CAMPOS ORÇAMENTÁRIOS (PTRES, ND, FONTE, PI, UG)
         self.modal_txt_ptres.value = str(nc.get('ptres', ''))
-        self.modal_txt_pi.value = nc.get('pi', '')
         self.modal_txt_nd.value = str(nc.get('natureza_despesa', ''))
+        self.modal_txt_fonte.value = str(nc.get('fonte', ''))
+        self.modal_txt_pi.value = str(nc.get('pi', ''))
         self.modal_txt_ug_gestora.value = str(nc.get('ug_gestora', ''))
-        self.modal_txt_observacao.value = nc.get('observacao', '')
         
-        # NOVAS LINHAS: Carrega datas e valor inicial formatado
-        self.modal_txt_data_recebimento.value = nc.get('data_recebimento', '')
-        self.modal_txt_data_validade.value = nc.get('data_validade_empenho', '')
+        # 3. CARREGAMENTO DE DATAS E VALORES
+        self.modal_txt_data_recebimento.value = str(nc.get('data_recebimento', ''))
+        self.modal_txt_data_validade.value = str(nc.get('data_validade_empenho', ''))
         self.modal_txt_valor_inicial.value = self.formatar_valor_para_campo(nc.get('valor_inicial', 0))
+        
+        # 4. CARREGAMENTO DE OBSERVAÇÕES
+        self.modal_txt_observacao.value = str(nc.get('observacao', ''))
 
-        # 2. Gerenciamento das Seções (Distribuições)
+        # 5. GERENCIAMENTO DAS SEÇÕES (DISTRIBUIÇÕES)
         self.distribuicoes_list.controls.clear()
-    
-        # O segredo está aqui: o nome deve ser igual ao que o Supabase envia
+        
+        # Busca as distribuições vinculadas no objeto NC
         secoes_reais = nc.get('distribuicao_nc_secoes', [])
     
         if secoes_reais:
@@ -722,10 +720,10 @@ class NcsView(ft.Column):
                     valor=dist.get('valor_alocado')
                 )
         else:
-            # Se for uma NC antiga sem seções salvas, abre uma linha em branco
+            # Caso não existam seções (NCs legadas), abre uma linha padrão vazia
             self.add_distribuicao_row(None)
 
-        # 3. Finalização e Abertura
+        # 6. ATUALIZAÇÃO DA UI DO MODAL
         self.modal_form.title = ft.Text("Editar Nota de Crédito")
         self.modal_form.open = True
         self.page.update()
@@ -736,182 +734,159 @@ class NcsView(ft.Column):
         self.page.update()
 
     def save_nc(self, e):
+        """Salva NC e Distribuições garantindo que a soma não ultrapasse o total."""
         try:
-            print("A validar dados da NC...")
-            # 1. Lista de campos de texto obrigatórios (Removi o modal_dd_secao daqui)
-            campos_obrigatorios = [
-                self.modal_txt_numero_nc, self.modal_txt_data_recebimento,
-                self.modal_txt_data_validade, self.modal_txt_valor_inicial,
-                self.modal_txt_ptres, self.modal_txt_nd,
-                self.modal_txt_fonte, self.modal_txt_pi, self.modal_txt_ug_gestora
-            ]
+            # 1. Conversão do valor total (modelo de digitação simples)
+            val_texto = self.modal_txt_valor_inicial.value or "0"
+            val_ini_total = float(val_texto.replace(".", "").replace(",", "."))
             
-            has_error = False
-            for campo in campos_obrigatorios:
-                campo.error_text = None 
-                if not campo.value:
-                    campo.error_text = "Obrigatório"
-                    has_error = True
-            
-            if not self.modal_txt_numero_nc.value or len(self.modal_txt_numero_nc.value) != 12:
-                self.modal_txt_numero_nc.error_text = "Deve ter 12 caracteres (ex: 2026NC000001)"
-                has_error = True
-
-            # 2. Validação da Distribuição por Seção
-            if not self.distribuicoes_list.controls:
-                self.show_error("Adicione pelo menos uma seção para distribuir o valor da NC.")
-                return
-
-            try:
-                valor_total_nc = float(self.modal_txt_valor_inicial.value.replace(".", "").replace(",", "."))
-            except:
-                self.modal_txt_valor_inicial.error_text = "Valor inválido"
-                has_error = True
-
-            if has_error:
-                self.modal_form.update()
-                return
-
-            # 3. Cálculo e Validação da Soma das Seções
-            total_distribuido = 0.0
-            dados_distribuicao = []
+            # 2. Validação da soma das seções
+            soma_distribuicoes = 0
+            distribuicoes_para_salvar = []
             
             for row in self.distribuicoes_list.controls:
-                # Cada row é um ft.Row([dd_secao, txt_valor, btn_remove])
-                dd_sec = row.controls[0]
-                txt_val = row.controls[1]
+                # controle 0 = Dropdown Seção, controle 1 = TextField Valor
+                id_secao = row.controls[0].value
+                v_texto = row.controls[1].value or "0"
+                v_float = float(v_texto.replace(".", "").replace(",", "."))
                 
-                if not dd_sec.value or not txt_val.value:
-                    self.show_error("Preencha a seção e o valor em todas as linhas de distribuição.")
-                    return
-                
-                valor_fatia = float(txt_val.value.replace(".", "").replace(",", "."))
-                total_distribuido += valor_fatia
-                dados_distribuicao.append({"id_secao": dd_sec.value, "valor": valor_fatia})
+                if id_secao and v_float > 0:
+                    soma_distribuicoes += v_float
+                    distribuicoes_para_salvar.append((id_secao, v_float))
 
-            # Verifica se a soma bate com o total da NC (Ousadia: Precisão total)
-            if abs(total_distribuido - valor_total_nc) > 0.01:
-                self.show_error(f"Erro: A soma das seções (R$ {total_distribuido:,.2f}) não é igual ao total da NC (R$ {valor_total_nc:,.2f}).")
+            # TRAVA DE SEGURANÇA
+            if round(soma_distribuicoes, 2) > round(val_ini_total, 2):
+                self.show_error(f"Erro: A soma das seções (R$ {soma_distribuicoes:,.2f}) " 
+                                f"excede o total da NC (R$ {val_ini_total:,.2f}).")
                 return
 
-            # --- INÍCIO DO SALVAMENTO ---
-            self.modal_form_loading_ring.visible = True
-            self.modal_form.update()
+            user = self.page.session.get("user")
+            dados_nc = (
+                self.modal_txt_numero_nc.value.strip().upper(), self.modal_txt_data_recebimento.value,
+                self.modal_txt_data_validade.value, val_ini_total, self.modal_txt_ptres.value,
+                self.modal_txt_nd.value, self.modal_txt_fonte.value, self.modal_txt_pi.value,
+                self.modal_txt_ug_gestora.value, self.modal_txt_observacao.value
+            )
 
-            numero_formatado = self.modal_txt_numero_nc.value.strip().upper()
-            
-            dados_nc = {
-                "numero_nc": numero_formatado, 
-                "data_recebimento": self.modal_txt_data_recebimento.value,
-                "data_validade_empenho": self.modal_txt_data_validade.value,
-                "valor_inicial": valor_total_nc,
-                "ptres": self.modal_txt_ptres.value,
-                "natureza_despesa": self.modal_txt_nd.value,
-                "fonte": self.modal_txt_fonte.value,
-                "pi": self.modal_txt_pi.value,
-                "ug_gestora": self.modal_txt_ug_gestora.value,
-                "observacao": self.modal_txt_observacao.value
-            }
-
+            # 3. Transação Única: Garante que ou salva tudo ou não salva nada
             if self.id_sendo_editado is None:
-                res = supabase.table('notas_de_credito').insert(dados_nc).execute()
-                nc_id = res.data[0]['id']
+                # Nova NC
+                sql_ins = """INSERT INTO notas_de_credito 
+                             (numero_nc, data_recebimento, data_validade_empenho, valor_inicial, ptres, natureza_despesa, fonte, pi, ug_gestora, observacao) 
+                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id"""
+                res = database.execute_query(sql_ins, dados_nc)
+                nc_id = res[0]['id']
+                queries = []
             else:
-                supabase.table('notas_de_credito').update(dados_nc).eq('id', self.id_sendo_editado).execute()
+                # Edição: Limpa distribuições antigas e atualiza a NC
                 nc_id = self.id_sendo_editado
-                supabase.table('distribuicao_nc_secoes').delete().eq('id_nc', nc_id).execute()
+                queries = [
+                    ("UPDATE notas_de_credito SET numero_nc=%s, data_recebimento=%s, data_validade_empenho=%s, valor_inicial=%s, ptres=%s, natureza_despesa=%s, fonte=%s, pi=%s, ug_gestora=%s, observacao=%s WHERE id=%s", 
+                     dados_nc + (nc_id,)),
+                    ("DELETE FROM distribuicao_nc_secoes WHERE id_nc = %s", (nc_id,))
+                ]
 
-            for item in dados_distribuicao:
-                supabase.table('distribuicao_nc_secoes').insert({
-                    "id_nc": nc_id,
-                    "id_secao": item["id_secao"],
-                    "valor_alocado": item["valor"]
-                }).execute()
+            # Adiciona as novas distribuições à transação
+            for sid, v_alocado in distribuicoes_para_salvar:
+                queries.append(("INSERT INTO distribuicao_nc_secoes (id_nc, id_secao, valor_alocado) VALUES (%s,%s,%s)", 
+                                (nc_id, sid, v_alocado)))
 
-            # SUCESSO: Só aqui o modal fecha
-            self.show_success_snackbar("Salvo com sucesso!")
+            if queries:
+                database.execute_transaction(queries)
+
+            self.show_success_snackbar("Nota de Crédito e distribuições salvas com sucesso!")
             self.close_modal(None)
             self.load_ncs_data()
+            if self.on_data_changed_callback: self.on_data_changed_callback(None)
 
         except Exception as ex:
-            # CORREÇÃO 3: Forçar o modal a ficar aberto em caso de erro no banco
-            print(f"Erro ao salvar: {ex}")
-            self.modal_form.open = True  # Mantém aberto
-            self.modal_form.update()
             self.handle_db_error(ex, "salvar NC")
-        finally:
-            self.modal_form_loading_ring.visible = False
-            self.modal_form.update()
+
+    def _definir_status_nc(self, nc):
+        """Calcula o status localmente para evitar erro de coluna inexistente no DB."""
+        try:
+            hoje = datetime.now().date()
+            validade_str = nc.get('data_validade_empenho')
+            saldo = float(nc.get('saldo_disponivel', 0))
+            if saldo <= 0: 
+                return "Sem Saldo"
+            if validade_str:
+                validade = datetime.fromisoformat(validade_str).date()
+                if validade < hoje: 
+                    return "Vencida"
+            return "Ativa"
+        except Exception:
+            return "Erro no Cálculo"       
                  
     def open_history_modal(self, nc):
-        nc_id = nc.get('id')
-        nc_numero = nc.get('numero_nc', 'Desconhecido')
-        if not nc_id:
-             self.show_error("Erro: ID da NC não encontrado para carregar extrato.")
-             return
-        print(f"A carregar extrato para a NC: {nc_numero} (ID: {nc_id})")
-        
-        self.history_modal_title.value = f"Extrato: {nc_numero}"
+        nc_id = nc.get('id_nc')
+        self.history_modal_title.value = f"Extrato: {nc.get('numero_nc')}"
         self.history_nes_list.controls.clear()
         self.history_recolhimentos_list.controls.clear()
-        self.history_nes_list.controls.append(ft.ProgressRing())
-        self.history_recolhimentos_list.controls.append(ft.ProgressRing())
-        self.history_modal.open = True
-        self.page.update()
         
         try:
-            self.history_nes_list.controls.clear()
-            self.history_recolhimentos_list.controls.clear()
-            
-            resposta_nes = supabase.table('notas_de_empenho').select('*').eq('id_nc', nc_id).order('data_empenho', desc=True).execute()
-            if resposta_nes.data:
-                for ne in resposta_nes.data:
-                    data = datetime.fromisoformat(ne['data_empenho']).strftime('%d/%m/%Y') if ne.get('data_empenho') else '??/??/????'
-                    valor = self.formatar_moeda(ne.get('valor_empenhado'))
-                    num_ne = ne.get('numero_ne', 'N/A')
-                    desc = ne.get('descricao', '')
-                    self.history_nes_list.controls.append(ft.Text(f"[{data}] - {num_ne} - {valor} - {desc}"))
-            else:
-                self.history_nes_list.controls.append(ft.Text("Nenhum empenho registado.", italic=True))
-            
-            resposta_recolhimentos = supabase.table('recolhimentos_de_saldo').select('*').eq('id_nc', nc_id).order('data_recolhimento', desc=True).execute()
-            if resposta_recolhimentos.data:
-                for rec in resposta_recolhimentos.data:
-                    data = datetime.fromisoformat(rec['data_recolhimento']).strftime('%d/%m/%Y') if rec.get('data_recolhimento') else '??/??/????'
-                    valor = self.formatar_moeda(rec.get('valor_recolhido'))
-                    desc = rec.get('descricao', '')
-                    self.history_recolhimentos_list.controls.append(ft.Text(f"[{data}] - {valor} - {desc}"))
-            else:
-                self.history_recolhimentos_list.controls.append(ft.Text("Nenhum recolhimento registado.", italic=True))
-            
-            self.history_modal.update()
-            
-        except Exception as ex:
-            print(f"Erro ao carregar extrato da NC: {ex}")
-            self.history_modal.open = False
-            self.handle_db_error(ex, "carregar extrato")
+            # TÉCNICO: Função auxiliar para tratar datas mistas
+            def fmt_d(d):
+                if not d: return "N/A"
+                return d.strftime('%d/%m/%Y') if not isinstance(d, str) else datetime.fromisoformat(d).strftime('%d/%m/%Y')
+
+            res_nes = database.execute_query("SELECT * FROM notas_de_empenho WHERE id_nc = %s ORDER BY data_empenho DESC", (nc_id,))
+            if res_nes:
+                for ne in res_nes:
+                    self.history_nes_list.controls.append(ft.Text(f"[{fmt_d(ne['data_empenho'])}] - {ne['numero_ne']} - {self.formatar_moeda(ne['valor_empenhado'])}"))
+
+            res_rec = database.execute_query("SELECT * FROM recolhimentos_de_saldo WHERE id_nc = %s ORDER BY data_recolhimento DESC", (nc_id,))
+            if res_rec:
+                for rec in res_rec:
+                    self.history_recolhimentos_list.controls.append(ft.Text(f"[{fmt_d(rec['data_recolhimento'])}] - {self.formatar_moeda(rec['valor_recolhido'])} - {rec['descricao']}"))
+
+            self.history_modal.open = True
+            self.page.update()
+        except Exception as ex: self.handle_db_error(ex, "carregar extrato")
             
     def close_history_modal(self, e):
         self.history_modal.open = False
         self.page.update()
         
     def open_recolhimento_modal(self, nc):
-        nc_id = nc.get('id')
-        nc_numero = nc.get('numero_nc', 'Desconhecido')
+        """Abre o modal carregando as seções daquela NC."""
+        # Usa id_nc conforme padronizamos
+        nc_id = nc.get('id_nc')
         if not nc_id:
-             self.show_error("Erro: ID da NC não encontrado para recolhimento.")
+             self.show_error("Erro: ID da NC não encontrado.")
              return
-        self.id_nc_para_recolhimento = nc_id 
-        print(f"A abrir modal de Recolhimento para NC: {nc_numero}")
-        self.recolhimento_modal_title.value = f"Recolher Saldo: {nc_numero}"
-        self.modal_rec_data.value = ""
+
+        self.id_nc_para_recolhimento = nc_id # Mantemos para referência
         self.modal_rec_valor.value = ""
         self.modal_rec_descricao.value = ""
-        self.modal_rec_data.error_text = None
-        self.modal_rec_valor.error_text = None
-        self.recolhimento_modal.open = True
-        self.page.update()
-        self.modal_rec_data.focus() 
+        self.modal_rec_secao.options = [] # Limpa opções antigas
+
+        # Busca as seções/cotas desta NC no banco
+        try:
+            sql = """
+                SELECT d.id, s.nome, d.valor_alocado, 
+                       (d.valor_alocado - COALESCE((SELECT SUM(valor_empenhado) FROM notas_de_empenho WHERE id_distribuicao = d.id), 0)
+                        - COALESCE((SELECT SUM(valor_recolhido) FROM recolhimentos_de_saldo WHERE id_distribuicao = d.id), 0)) as saldo_real
+                FROM distribuicao_nc_secoes d
+                JOIN secoes s ON s.id = d.id_secao
+                WHERE d.id_nc = %s
+            """
+            secoes = database.execute_query(sql, (nc_id,))
+            
+            if secoes:
+                for s in secoes:
+                    # O value (key) será o ID DA DISTRIBUIÇÃO (d.id)
+                    texto = f"{s['nome']} (Disp: {self.formatar_moeda(s['saldo_real'])})"
+                    self.modal_rec_secao.options.append(ft.dropdown.Option(text=texto, key=str(s['id'])))
+                self.modal_rec_secao.value = None
+            else:
+                 self.show_error("Erro: Nenhuma distribuição encontrada para esta NC.")
+                 return
+
+            self.recolhimento_modal.open = True
+            self.page.update()
+        except Exception as ex:
+            self.handle_db_error(ex, "carregar cotas para recolhimento") 
 
     def close_recolhimento_modal(self, e):
         self.recolhimento_modal.open = False
@@ -919,67 +894,55 @@ class NcsView(ft.Column):
         self.page.update()
 
     def save_recolhimento(self, e):
-        if not self.id_nc_para_recolhimento:
-             self.show_error("Erro: Nenhuma NC selecionada para recolhimento.")
-             return
-             
-        try:
-            print("A validar dados do Recolhimento...")
-            has_error = False
-            self.modal_rec_data.error_text = None
-            self.modal_rec_valor.error_text = None
-            if not self.modal_rec_data.value:
-                self.modal_rec_data.error_text = "Obrigatório"
-                has_error = True
-            if not self.modal_rec_valor.value:
-                self.modal_rec_valor.error_text = "Obrigatório"
-                has_error = True
-            if has_error:
-                print("Erro de validação no Recolhimento.")
-                self.recolhimento_modal.update()
-                return
-            
-            valor_limpo = self.modal_rec_valor.value.replace(".", "").replace(",", ".")
-            dados_para_inserir = {
-                "id_nc": self.id_nc_para_recolhimento, 
-                "data_recolhimento": self.modal_rec_data.value.strip(),
-                "valor_recolhido": float(valor_limpo),
-                "descricao": self.modal_rec_descricao.value.strip(),
-            }
-        except Exception as ex_validation:
-            print(f"Erro na validação de dados: {ex_validation}")
-            self.show_error(f"Erro nos dados: {ex_validation}")
+        """Salva o recolhimento apenas se houver saldo suficiente na cota."""
+        if not self.id_nc_para_recolhimento: return
+        
+        if not self.modal_rec_secao.value:
+            self.show_error("Selecione a Seção/Cota de onde sairá o recurso.")
             return
-            
-        self.modal_rec_loading_ring.visible = True
-        self.modal_rec_btn_cancelar.disabled = True
-        self.modal_rec_btn_salvar.disabled = True
-        self.recolhimento_modal.update()
 
         try:
-            print("A inserir Recolhimento no Supabase...")
-            supabase.table('recolhimentos_de_saldo').insert(dados_para_inserir).execute()
-            print("Recolhimento salvo com sucesso.")
+            id_distribuicao = int(self.modal_rec_secao.value)
             
-            self.show_success_snackbar("Recolhimento de saldo registado com sucesso!")
+            val_raw = self.modal_rec_valor.value or "0"
+            valor_recolhimento = float(val_raw.replace(".", "").replace(",", "."))
             
+            if valor_recolhimento <= 0:
+                self.show_error("O valor do recolhimento deve ser maior que zero.")
+                return
+
+            # --- VALIDAÇÃO DE SALDO (CRÍTICA) ---
+            # Calcula quanto a seção tem AGORA: (Alocado - Empenhado - Recolhido)
+            sql_saldo = """
+                SELECT d.valor_alocado - 
+                       COALESCE((SELECT SUM(valor_empenhado) FROM notas_de_empenho WHERE id_distribuicao = d.id), 0) -
+                       COALESCE((SELECT SUM(valor_recolhido) FROM recolhimentos_de_saldo WHERE id_distribuicao = d.id), 0) as saldo_real
+                FROM distribuicao_nc_secoes d
+                WHERE d.id = %s
+            """
+            res = database.execute_query(sql_saldo, (id_distribuicao,))
+            saldo_atual = float(res[0]['saldo_real']) if res else 0.0
+
+            if valor_recolhimento > round(saldo_atual, 2):
+                self.show_error(f"Saldo insuficiente na cota selecionada!\nSaldo Atual: {self.formatar_moeda(saldo_atual)}\nTentativa: {self.formatar_moeda(valor_recolhimento)}")
+                return
+            # ------------------------------------
+
+            sql = "INSERT INTO recolhimentos_de_saldo (id_nc, id_distribuicao, data_recolhimento, valor_recolhido, descricao) VALUES (%s, %s, %s, %s, %s)"
+            params = (self.id_nc_para_recolhimento, id_distribuicao, self.modal_rec_data.value, valor_recolhimento, self.modal_rec_descricao.value)
+            
+            database.execute_query(sql, params)
+            
+            self.show_success_snackbar("Saldo recolhido com sucesso!")
             self.close_recolhimento_modal(None)
-            self.load_ncs_data() 
-            if self.on_data_changed_callback:
-                self.on_data_changed_callback(None) 
-                
-        except Exception as ex:
-            print(f"Erro ao salvar Recolhimento: {ex}")
-            self.handle_db_error(ex, "salvar recolhimento")
+            self.load_ncs_data()
+            if self.on_data_changed_callback: self.on_data_changed_callback(None)
             
-        finally:
-            self.modal_rec_loading_ring.visible = False
-            self.modal_rec_btn_cancelar.disabled = False
-            self.modal_rec_btn_salvar.disabled = False
-            self.modal_rec_loading_ring.update()
+        except Exception as ex:
+            self.handle_db_error(ex, "salvar recolhimento")
                  
     def open_confirm_delete_nc(self, nc):
-        nc_id = nc.get('id')
+        nc_id = nc.get('id_nc')
         nc_numero = nc.get('numero_nc', 'Desconhecida')
         if not nc_id:
              self.show_error("Erro: ID da NC não encontrado para exclusão.")
@@ -995,71 +958,39 @@ class NcsView(ft.Column):
         self.page.update()
 
     def confirm_delete_nc(self, e):
+        """Exclui a NC e define o utilizador para o log de auditoria."""
         id_para_excluir = self.confirm_delete_nc_dialog.data
-        if not id_para_excluir:
-            self.show_error("Erro: ID da NC para exclusão não encontrado.")
-            self.close_confirm_delete_nc(None)
-            return
-
+        user_atual = self.page.session.get("user") # RESOLVE O ERRO DE NAMEERROR
         try:
-            print(f"A excluir NC ID: {id_para_excluir}...")
-            supabase.table('notas_de_credito').delete().eq('id', id_para_excluir).execute()
-            print("NC excluída com sucesso.")
-            
-            self.show_success_snackbar("Nota de Crédito excluída com sucesso.")
-            
+            database.registrar_log(user_atual.get('id'), "EXCLUIR_NC", "notas_de_credito", id_para_excluir, "NC removida")
+            database.execute_query("DELETE FROM notas_de_credito WHERE id = %s", (id_para_excluir,))
+            self.show_success_snackbar("NC excluída com sucesso.")
             self.close_confirm_delete_nc(None)
-            self.load_secoes_cache() 
-            self.load_filter_options() 
-            self.load_ncs_data() 
-            if self.on_data_changed_callback:
-                self.on_data_changed_callback(None) 
-                
+            self.load_ncs_data() # ATUALIZA A TABELA IMEDIATAMENTE
+            if self.on_data_changed_callback: self.on_data_changed_callback(None)
         except Exception as ex:
-            print(f"Erro ao excluir NC: {ex}")
             self.handle_db_error(ex, "excluir NC")
-            self.close_confirm_delete_nc(None)
             
-    def on_file_picker_result(self, e: ft.FilePickerResultEvent):
-        if not e.files:
-            print("on_file_picker_result: O utilizador cancelou.")
-            return
-
+    def on_file_picker_result(self, e: ft.ControlEvent):
+        if not e.files: return
         file_name = e.files[0].name
-        print(f"on_file_picker_result: Ficheiro selecionado: {file_name}")
-
         try:
-            upload_url = self.page.get_upload_url(file_name, 60) 
-            print(f"on_file_picker_result: URL de upload obtida: {upload_url}")
-
-            upload_list = [
-                ft.FilePickerUploadFile(
-                    file_name,
-                    upload_url,
-                    method="PUT" 
-                )
-            ]
-
+            upload_url = self.page.get_upload_url(file_name, 120) 
+            # Deixe sem o parâmetro method="POST" para usar o padrão do servidor interno
+            self.file_picker_import.upload([ft.FilePickerUploadFile(file_name, upload_url)])
             self.progress_ring.visible = True
             self.page.update()
-            print("on_file_picker_result: A iniciar upload...")
-            self.file_picker_import.upload(upload_list)
+        except Exception as ex: self.show_error(f"Erro: {ex}")
 
-        except Exception as ex:
-            print(f"Erro em on_file_picker_result: {ex}")
-            traceback.print_exc()
-            self.show_error(f"Erro ao iniciar upload: {ex}")
-            self.progress_ring.visible = False
-            self.page.update()
-
-    def on_upload_progress(self, e: ft.FilePickerUploadEvent):
+    def on_upload_progress(self, e: ft.ControlEvent):
+        """Acompanha o progresso do upload (Versão Segura)."""
         if e.error:
             print(f"on_upload_progress: ERRO: {e.error}")
             self.show_error(f"Erro durante o upload: {e.error}")
             self.progress_ring.visible = False
             self.page.update()
             return
-        
+            
         if e.progress < 1.0:
             return
 
@@ -1094,97 +1025,79 @@ class NcsView(ft.Column):
             self.page.update()
 
     def _parse_siafi_pdf(self, file_path_or_object): 
+        """
+        Versão Adaptada v2.0: Suporte ao novo layout SIAFI (Rótulos Empilhados).
+        Processa o texto extraído para capturar dados orçamentários e prazos.
+        """
         texto_completo = ""
-        
-        with pdfplumber.open(file_path_or_object) as pdf:
-            primeira_pagina = pdf.pages[0]
-            texto_completo = primeira_pagina.extract_text(layout=True, x_tolerance=2)
-
-        if not texto_completo:
-            print("Erro de parsing: Nenhum texto extraído do PDF.")
+        try:
+            with pdfplumber.open(file_path_or_object) as pdf:
+                # x_tolerance=5 ajuda a manter palavras de colunas diferentes separadas
+                texto_completo = pdf.pages[0].extract_text(layout=True, x_tolerance=5)
+        except Exception as e:
+            print(f"Erro na leitura física do PDF: {e}")
             return None
 
+        if not texto_completo: return None
+        
         dados_nc = {}
 
-        mapa_meses = {
-            'JAN': '01', 'FEV': '02', 'MAR': '03', 'ABR': '04',
-            'MAI': '05', 'JUN': '06', 'JUL': '07', 'AGO': '08',
-            'SET': '09', 'OUT': '10', 'NOV': '11', 'DEZ': '12'
-        }
+        # --- FUNÇÕES AUXILIARES DE TRATAMENTO ---
+        def limpar(txt): return re.sub(r'\s+', ' ', txt.strip()) if txt else ""
 
-        def extrair(padrao, texto, nome_campo):
-            match = re.search(padrao, texto, re.IGNORECASE | re.DOTALL)
-            if match:
-                valor = match.group(1).strip()
-                valor = valor.replace("\n", " ").replace("\r", "")
-                valor = re.sub(r'\s+', ' ', valor)
-                print(f"Campo <{nome_campo}> encontrado: {valor}")
-                return valor
-            print(f"Padrão RegEx <{nome_campo}> falhou: {padrao}")
-            return None
-            
-        def formatar_data(data_str, ano_base_str=None):
+        def formatar_data_br_para_iso(data_str):
             if not data_str: return None
-            data_str = data_str.upper().replace("0", "O")
-            data_str = data_str.replace("UT", "OUT") 
-            data_str = data_str.replace(".", "") 
-            data_str = data_str.replace(" ", "") 
-            try:
-                dt = datetime.strptime(data_str, '%d%b%y')
-                return dt.strftime('%Y-%m-%d')
-            except ValueError:
-                try:
-                    dt = datetime.strptime(data_str, '%d%b')
-                    if ano_base_str:
-                        ano = ano_base_str[:4]
-                        return dt.replace(year=int(ano)).strftime('%Y-%m-%d')
-                    else:
-                        print(f"Formato de data sem ano, mas ano_base não fornecido: {data_str}")
-                        return None
-                except ValueError:
-                    print(f"Formato de data inválido: {data_str}")
-                    return None
+            # Tenta 04/02/2026 -> 2026-02-04
+            match = re.search(r'(\d{2})/(\d{2})/(\d{4})', data_str)
+            if match: return f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
+            return None
 
-        dados_nc['numero_nc'] = extrair(r'NUMERO\s*:\s*(\d{4}NC\d+)', texto_completo, "Número NC")
-        data_emissao_str = extrair(r'DATA EMISSAO\s*:\s*(\S+)', texto_completo, "Data Emissão") 
-        dados_nc['data_recebimento'] = formatar_data(data_emissao_str)
-        obs_match = re.search(r'OBSERVACAO(.*?)(NUM\. TRANSFERENCIA:|LANCADO POR)', texto_completo, re.DOTALL | re.IGNORECASE)
+        # --- 1. CAPTURA DO NÚMERO DA NC (ANO + NÚMERO) ---
+        ano = re.search(r'Ano:\s+(\d{4})', texto_completo)
+        num = re.search(r'crédito:\s+(\d+)', texto_completo)
+        if ano and num:
+            dados_nc['numero_nc'] = f"{ano.group(1)}NC{num.group(1).zfill(6)}"
+        
+        # --- 2. CAPTURA DA DATA DE EMISSÃO ---
+        data_emissao = re.search(r'Emissão:\s+(\d{2}/\d{2}/\d{4})', texto_completo)
+        if data_emissao:
+            dados_nc['data_recebimento'] = formatar_data_br_para_iso(data_emissao.group(1))
+
+        # --- 3. CAPTURA DA TABELA FINANCEIRA (ORIGEM/DESTINO) ---
+        # Padrão: Index PTRES(6) Fonte(10) ND(6) UG(6) PI(S+) Valor
+        # Usamos [\S\s]+? para lidar com quebras de linha entre os cabeçalhos e os dados
+        padrao_tabela = r'(\d+)\s+(\d{6})\s+(\d{10})\s+(\d{6})\s+(\d{6}|\d{3}\*{3})\s+(\S+)\s+([\d.,]+)'
+        match_fin = re.search(padrao_tabela, texto_completo)
+        
+        if match_fin:
+            dados_nc['ptres'] = match_fin.group(2)
+            dados_nc['fonte'] = match_fin.group(3)
+            dados_nc['nd']    = match_fin.group(4)
+            dados_nc['ug_gestora'] = match_fin.group(5).replace('*', '0') # Ajuste para UGs censuradas
+            dados_nc['pi']    = match_fin.group(6)
+            dados_nc['valor_inicial'] = match_fin.group(7)
+
+        # --- 4. OBSERVAÇÃO E PRAZO DE EMPENHO ---
+        obs_match = re.search(r'Descrição:(.*?)(?:Itens de Contabilização|$)', texto_completo, re.DOTALL | re.IGNORECASE)
         if obs_match:
-            obs_texto_completo = obs_match.group(1).strip()
-            obs_limpa = re.sub(r'\s+', ' ', obs_texto_completo.replace("\n", " ")).strip()
-            dados_nc['observacao'] = obs_limpa
-            print(f"Campo <Observação> encontrado: {obs_limpa}")
+            texto_obs = limpar(obs_match.group(1))
+            dados_nc['observacao'] = texto_obs
             
-            if re.search(r'empenho imediato', obs_texto_completo, re.IGNORECASE):
-                dados_nc['data_validade'] = dados_nc['data_recebimento']
-                print("Campo <Prazo Empenho> encontrado: empenho imediato")
-            else:
-                prazo_str = extrair(r'EMPH ATÉ\s*([\d\w\.]+)', obs_texto_completo, "Prazo Empenho")
-                if prazo_str:
-                    dados_nc['data_validade'] = formatar_data(prazo_str, ano_base_str=dados_nc['data_recebimento'])
-        else:
-            print("Bloco <OBSERVACAO> não encontrado.")
+            # Busca Prazo no formato: 27 FEV 26
+            meses_map = {'JAN': '01', 'FEV': '02', 'MAR': '03', 'ABR': '04', 'MAI': '05', 'JUN': '06', 
+                         'JUL': '07', 'AGO': '08', 'SET': '09', 'OUT': '10', 'NOV': '11', 'DEZ': '12'}
+            
+            prazo_regex = r'PRAZO DE EMPENHO\s+(\d{1,2})\s+([A-Z]{3})\s+(\d{2,4})'
+            m_prazo = re.search(prazo_regex, texto_obs, re.IGNORECASE)
+            
+            if m_prazo:
+                dia = m_prazo.group(1).zfill(2)
+                mes = meses_map.get(m_prazo.group(2).upper())
+                ano_p = m_prazo.group(3)
+                ano_full = f"20{ano_p}" if len(ano_p) == 2 else ano_p
+                if mes:
+                    dados_nc['data_validade'] = f"{ano_full}-{mes}-{dia}"
 
-        padrao_tabela = r'300063\s+\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+\S*\s*(\d+)\s+(\S+)\s+([\d.,]+)'
-        match_tabela = re.search(padrao_tabela, texto_completo, re.IGNORECASE)
-        
-        if match_tabela:
-            print("Linha de dados da tabela encontrada e processada.")
-            dados_nc['ptres'] = match_tabela.group(1)
-            dados_nc['fonte'] = match_tabela.group(2)
-            dados_nc['nd'] = match_tabela.group(3)
-            dados_nc['ug_gestora_tabela'] = match_tabela.group(4)
-            dados_nc['pi'] = match_tabela.group(5)
-            dados_nc['valor_inicial'] = match_tabela.group(6)
-        else:
-            print("Padrão RegEx da linha de dados (300063) falhou.")
-
-        ug_emitente = extrair(r'UG EMITENTE\s*:\s*(\d+)', texto_completo, "UG Gestora (Emitente)")
-        if ug_emitente:
-            dados_nc['ug_gestora'] = ug_emitente
-        elif dados_nc.get('ug_gestora_tabela'):
-            dados_nc['ug_gestora'] = dados_nc.get('ug_gestora_tabela')
-        
         return dados_nc
 
     def preencher_modal_com_dados(self, dados_nc):
@@ -1193,7 +1106,7 @@ class NcsView(ft.Column):
         print("A preencher modal...")
         
         if dados_nc.get('numero_nc'):
-            self.modal_txt_numero_nc.value = dados_nc['numero_nc'].upper().replace("2026NC", "")
+            self.modal_txt_numero_nc.value = dados_nc['numero_nc'].upper()
             
         if dados_nc.get('data_recebimento'):
             self.modal_txt_data_recebimento.value = dados_nc['data_recebimento']
@@ -1201,10 +1114,15 @@ class NcsView(ft.Column):
             self.modal_txt_data_validade.value = dados_nc['data_validade']
             
         if dados_nc.get('valor_inicial'):
-            valor_pdf_limpo = dados_nc['valor_inicial'].replace(".", "").replace(",", "")
-            self.modal_txt_valor_inicial.value = valor_pdf_limpo
-            self.format_currency_input(ft.ControlEvent(target=self.modal_txt_valor_inicial, name="change", data=valor_pdf_limpo, control=self.modal_txt_valor_inicial, page=self.page))
+            # RESOLVE O ERRO DE UPLOAD: 
+            # Apenas limpa pontos de milhar e garante a vírgula decimal
+            v_pdf = dados_nc['valor_inicial'].replace("R$", "").strip()
+            # Se o PDF vier com '1.500,00', transformamos em '1500,00'
+            if "." in v_pdf and "," in v_pdf:
+                v_pdf = v_pdf.replace(".", "")
             
+            self.modal_txt_valor_inicial.value = v_pdf
+            # REMOVIDA a chamada para self.format_currency_input
         if dados_nc.get('ptres'):
             self.modal_txt_ptres.value = dados_nc['ptres']
         if dados_nc.get('nd'):
@@ -1232,9 +1150,10 @@ class NcsView(ft.Column):
         # 2. Cria o campo de valor para essa fatia da NC
         txt_valor = ft.TextField(
             label="Valor para esta Seção",
-            prefix="R$",
+            prefix_text="R$ ",
             value=self.formatar_valor_para_campo(valor) if valor else "",
-            on_change=self.format_currency_input,
+            input_filter=ft.InputFilter(allow=True, regex_string=r"^[0-9]*[.,]?[0-9]{0,2}$", replacement_string=""),
+            on_change=None, # Sem máscara automática
             expand=1
         )
 
